@@ -1,0 +1,30 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  backend:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    env_file: .env
+    depends_on:
+      - mosquitto
+
+  mqtt-consumer:
+    build: ./scripts
+    command: npx tsx mqtt-consumer.ts
+    env_file: .env
+    depends_on:
+      - mosquitto
+
+  simulator:
+    build: ./scripts
+    command: npx tsx simulators/run-all.ts
+    environment:
+      - MQTT_BROKER_URL=mqtt://mosquitto:1883
+    depends_on:
+      - mosquitto

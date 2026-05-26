@@ -1,0 +1,21 @@
+{
+  "name": "verifiedvietcoffee-scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "simulate": "tsx simulators/run-all.ts",
+    "consume": "tsx mqtt-consumer.ts",
+    "anchor": "tsx daily-anchor-cron.ts"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.0",
+    "@supabase/supabase-js": "^2.49.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}

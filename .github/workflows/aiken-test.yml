@@ -1,0 +1,12 @@
+name: Aiken
+on:
+  pull_request:
+    paths: ['aiken/**']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aiken-lang/setup-aiken@v1
+      - run: cd aiken && aiken check && aiken build

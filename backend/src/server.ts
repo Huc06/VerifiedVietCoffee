@@ -11,7 +11,6 @@ const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: true });
 
-// Routes
 await app.register(iotRoutes, { prefix: "/iot" });
 await app.register(lotRoutes, { prefix: "/lot" });
 await app.register(blockchainRoutes, { prefix: "/blockchain" });
@@ -22,4 +21,4 @@ app.get("/health", async () => ({ status: "ok" }));
 
 const port = Number(process.env.PORT) || 4000;
 await app.listen({ port, host: "0.0.0.0" });
-console.log(`Server running on port ${port}`);
+console.log(`Server running on http://localhost:${port}`);

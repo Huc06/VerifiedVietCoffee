@@ -1,19 +1,10 @@
-import mqtt from "mqtt";
-
-const BROKER = process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
+const API_URL = process.env.API_URL || "http://localhost:4000";
 const FARM_ID = "binhdong";
-const INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+const INTERVAL_MS = 5_000; // 5s for demo (real: 15 min)
 
-const client = mqtt.connect(BROKER);
-
-client.on("connect", () => {
-  console.log("[soil-simulator] Connected to MQTT broker");
-  publish();
-  setInterval(publish, INTERVAL_MS);
-});
-
-function publish() {
+async function publish() {
   const data = {
+    farm_id: FARM_ID,
     device_id: "teros12-block-A",
     timestamp: new Date().toISOString(),
     soil_moisture_pct: rand(35, 55),
@@ -22,11 +13,23 @@ function publish() {
     soil_ph: rand(5.2, 6.2),
   };
 
-  const topic = `farm/${FARM_ID}/block-a/soil`;
-  client.publish(topic, JSON.stringify(data));
-  console.log(`[soil] ${topic}`, data);
+  try {
+    const res = await fetch(`${API_URL}/iot/data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    console.log(`[soil] ${data.timestamp}`, data.soil_moisture_pct + "%", data.soil_temp_c + "°C", "→", json.status);
+  } catch (e: any) {
+    console.error("[soil] Failed:", e.message);
+  }
 }
 
 function rand(min: number, max: number) {
   return Math.round((Math.random() * (max - min) + min) * 10) / 10;
 }
+
+console.log(`[soil-simulator] Sending to ${API_URL} every ${INTERVAL_MS / 1000}s`);
+publish();
+setInterval(publish, INTERVAL_MS);

@@ -1,19 +1,10 @@
-import mqtt from "mqtt";
-
-const BROKER = process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
+const API_URL = process.env.API_URL || "http://localhost:4000";
 const FARM_ID = "binhdong";
-const INTERVAL_MS = 15 * 60 * 1000;
+const INTERVAL_MS = 5_000;
 
-const client = mqtt.connect(BROKER);
-
-client.on("connect", () => {
-  console.log("[weather-simulator] Connected to MQTT broker");
-  publish();
-  setInterval(publish, INTERVAL_MS);
-});
-
-function publish() {
+async function publish() {
   const data = {
+    farm_id: FARM_ID,
     device_id: "weather-station-01",
     timestamp: new Date().toISOString(),
     air_temp_c: rand(18, 28),
@@ -23,11 +14,23 @@ function publish() {
     wind_ms: rand(0.5, 3),
   };
 
-  const topic = `farm/${FARM_ID}/station/weather`;
-  client.publish(topic, JSON.stringify(data));
-  console.log(`[weather] ${topic}`, data);
+  try {
+    const res = await fetch(`${API_URL}/iot/data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    console.log(`[weather] ${data.timestamp}`, data.air_temp_c + "°C", data.humidity_pct + "%", "→", json.status);
+  } catch (e: any) {
+    console.error("[weather] Failed:", e.message);
+  }
 }
 
 function rand(min: number, max: number) {
   return Math.round((Math.random() * (max - min) + min) * 10) / 10;
 }
+
+console.log(`[weather-simulator] Sending to ${API_URL} every ${INTERVAL_MS / 1000}s`);
+publish();
+setInterval(publish, INTERVAL_MS);

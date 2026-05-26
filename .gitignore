@@ -27,3 +27,5 @@ aiken/artifacts/
 
 # Docker
 *.log
+
+temp

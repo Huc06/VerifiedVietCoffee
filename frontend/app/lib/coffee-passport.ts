@@ -18,7 +18,7 @@ export const scriptCbor = applyCborEncoding(compiledCode);
 // Script hash / Policy ID — directly from the Aiken blueprint
 export const passportPolicyId = blueprint.validators[0].hash;
 
-// Enterprise script address on Preprod (no staking credential)
+// Enterprise script address on Preview (no staking credential)
 // Header byte: 0x70 (testnet script-only) + 28-byte script hash
 function buildScriptAddress(scriptHash: string, networkId: number): string {
   const header = networkId === 0 ? "70" : "71";
@@ -74,6 +74,8 @@ export interface PassportDatumParams {
  * All hash fields start empty; sustainability fields start at 0.
  */
 export function buildInitialDatum(params: PassportDatumParams): Data {
+  // Bool in Plutus = Constr 0 [] (False) or Constr 1 [] (True).
+  const FALSE: Data = { alternative: 0, fields: [] };
   const emptySustainability: Data = {
     alternative: 0,
     fields: [
@@ -86,13 +88,13 @@ export function buildInitialDatum(params: PassportDatumParams): Data {
       0, // co2e_per_kg_int10
       "", // co2_calc_method
       0, // water_l_per_kg
-      0, // wastewater_treated (Bool: 0 = False)
+      FALSE, // wastewater_treated: Bool
       0, // som_pct_int10
       "", // soil_test_lab_hash
       0, // shade_canopy_pct
       0, // bird_species_count
       "", // biodiversity_audit_hash
-      [], // certifications (empty list)
+      [], // certifications: List<CertRef>
     ],
   };
 

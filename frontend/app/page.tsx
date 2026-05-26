@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { CardanoWallet, useWallet } from "@meshsdk/react";
+import { QRCodeSVG } from "qrcode.react";
 import {
   MeshTxBuilder,
   BlockfrostProvider,
@@ -22,29 +23,67 @@ import {
 
 const BLOCKFROST_KEY = process.env.NEXT_PUBLIC_BLOCKFROST_KEY || "";
 
-// Lace returns null from getCollateral() when no dedicated collateral UTxO is
-// set; Mesh's getCollateralMesh() then crashes on .map(). Fall back to the
-// first pure-ADA UTxO with >= 5 ADA so we can still produce a valid tx.
+// Lace's CIP-30 getCollateral returns null when no dedicated collateral UTxO
+// is configured (Mesh's getCollateralMesh() then crashes on .map()). Fall
+// back to the largest pure-ADA UTxO from the wallet (>= 3 ADA, the minimum
+// the protocol needs for a Plutus tx at current params).
 async function getCollateralUtxo(wallet: any, utxos: UTxO[]): Promise<UTxO[]> {
   try {
     const fromWallet = await wallet.getCollateralMesh();
-    if (fromWallet && fromWallet.length > 0) return fromWallet;
-  } catch {
-    // fall through to fallback
+    if (fromWallet && fromWallet.length > 0) {
+      console.log("[collateral] from wallet:", fromWallet);
+      return fromWallet;
+    }
+  } catch (e) {
+    console.warn("[collateral] getCollateralMesh threw, falling back:", e);
   }
-  const fiveAda = BigInt(5000000);
-  const adaOnly = utxos.find(
-    (u) =>
-      u.output.amount.length === 1 &&
-      u.output.amount[0].unit === "lovelace" &&
-      BigInt(u.output.amount[0].quantity) >= fiveAda,
+
+  const minLovelace = BigInt(3_000_000); // 3 ADA
+  const isLovelace = (unit: string) => unit === "lovelace" || unit === "";
+
+  const pureAda = utxos
+    .filter((u) => {
+      const onlyAda =
+        u.output.amount.length === 1 && isLovelace(u.output.amount[0].unit);
+      if (!onlyAda) return false;
+      try {
+        return BigInt(u.output.amount[0].quantity) >= minLovelace;
+      } catch {
+        return false;
+      }
+    })
+    // largest first
+    .sort((a, b) =>
+      BigInt(b.output.amount[0].quantity) >
+      BigInt(a.output.amount[0].quantity)
+        ? 1
+        : -1,
+    );
+
+  console.log(
+    `[collateral] wallet utxos: ${utxos.length}, pure-ADA >= 3: ${pureAda.length}`,
   );
-  if (!adaOnly) {
-    throw new Error(
-      "No collateral available. Set up a 5 ADA collateral in Lace (Settings → Network → Collateral), or send yourself a small pure-ADA UTxO.",
+  if (utxos.length > 0) {
+    console.log(
+      "[collateral] first 3 utxos:",
+      utxos.slice(0, 3).map((u) => ({
+        units: u.output.amount.map((a) => a.unit),
+        qtys: u.output.amount.map((a) => a.quantity),
+      })),
     );
   }
-  return [adaOnly];
+
+  if (pureAda.length === 0) {
+    throw new Error(
+      `No pure-ADA collateral UTxO (>= 3 ADA) found in your wallet ` +
+        `(${utxos.length} UTxOs total). Either:\n` +
+        `  1) Set up a dedicated 5 ADA collateral in Lace ` +
+        `(Settings → Network → Collateral), OR\n` +
+        `  2) Send yourself a small pure-ADA UTxO (e.g. 5 tADA) so the dApp ` +
+        `has a clean input to use as collateral.`,
+    );
+  }
+  return [pureAda[0]];
 }
 
 type TxResult = { hash: string; error?: never } | { hash?: never; error: string };
@@ -70,7 +109,7 @@ export default function Home() {
   const [labCertHash, setLabCertHash] = useState("");
 
   function getProvider() {
-    if (!BLOCKFROST_KEY || BLOCKFROST_KEY === "your_blockfrost_preprod_key_here") {
+    if (!BLOCKFROST_KEY || BLOCKFROST_KEY === "your_blockfrost_preview_key_here") {
       throw new Error("Set NEXT_PUBLIC_BLOCKFROST_KEY in .env.local");
     }
     return new BlockfrostProvider(BLOCKFROST_KEY);
@@ -286,7 +325,7 @@ export default function Home() {
     <main className="flex min-h-screen flex-col items-center p-8 pt-16">
       <h1 className="text-3xl font-bold mb-1">VerifiedVietCoffee</h1>
       <p className="text-gray-500 mb-6 text-sm">
-        Smart Contract Test UI — Preprod
+        Smart Contract Test UI — Preview
       </p>
 
       <div className="mb-6">
@@ -490,13 +529,14 @@ export default function Home() {
                 <div>
                   <p className="font-semibold">Transaction Submitted</p>
                   <a
-                    href={`https://preprod.cardanoscan.io/transaction/${result.hash}`}
+                    href={`https://preview.cardanoscan.io/transaction/${result.hash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-green-600 hover:underline text-xs break-all"
                   >
                     {result.hash}
                   </a>
+                  {tab === "mint" && lotId && <ConsumerLink lotId={lotId} />}
                 </div>
               )}
             </div>
@@ -510,5 +550,31 @@ export default function Home() {
         </p>
       )}
     </main>
+  );
+}
+
+function ConsumerLink({ lotId }: { lotId: string }) {
+  const url =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/lot/${encodeURIComponent(lotId)}`
+      : `/lot/${encodeURIComponent(lotId)}`;
+  return (
+    <div className="mt-3 pt-3 border-t border-green-200 flex items-center gap-3">
+      <div className="bg-white p-1.5 rounded border border-gray-200">
+        <QRCodeSVG value={url} size={88} />
+      </div>
+      <div className="text-xs text-gray-700 space-y-1">
+        <p className="font-semibold text-gray-900">Consumer passport</p>
+        <a
+          href={`/lot/${encodeURIComponent(lotId)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 hover:underline break-all"
+        >
+          /lot/{lotId}
+        </a>
+        <p className="text-gray-400">Scan with phone or open in new tab.</p>
+      </div>
+    </div>
   );
 }

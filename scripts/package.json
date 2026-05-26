@@ -6,7 +6,8 @@
   "scripts": {
     "simulate": "tsx simulators/run-all.ts",
     "consume": "tsx mqtt-consumer.ts",
-    "anchor": "tsx daily-anchor-cron.ts"
+    "anchor": "tsx daily-anchor-cron.ts",
+    "mock-week": "tsx mock-week.ts"
   },
   "dependencies": {
     "mqtt": "^5.10.0",

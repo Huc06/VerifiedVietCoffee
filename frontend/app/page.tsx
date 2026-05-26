@@ -22,6 +22,31 @@ import {
 
 const BLOCKFROST_KEY = process.env.NEXT_PUBLIC_BLOCKFROST_KEY || "";
 
+// Lace returns null from getCollateral() when no dedicated collateral UTxO is
+// set; Mesh's getCollateralMesh() then crashes on .map(). Fall back to the
+// first pure-ADA UTxO with >= 5 ADA so we can still produce a valid tx.
+async function getCollateralUtxo(wallet: any, utxos: UTxO[]): Promise<UTxO[]> {
+  try {
+    const fromWallet = await wallet.getCollateralMesh();
+    if (fromWallet && fromWallet.length > 0) return fromWallet;
+  } catch {
+    // fall through to fallback
+  }
+  const fiveAda = BigInt(5000000);
+  const adaOnly = utxos.find(
+    (u) =>
+      u.output.amount.length === 1 &&
+      u.output.amount[0].unit === "lovelace" &&
+      BigInt(u.output.amount[0].quantity) >= fiveAda,
+  );
+  if (!adaOnly) {
+    throw new Error(
+      "No collateral available. Set up a 5 ADA collateral in Lace (Settings → Network → Collateral), or send yourself a small pure-ADA UTxO.",
+    );
+  }
+  return [adaOnly];
+}
+
 type TxResult = { hash: string; error?: never } | { hash?: never; error: string };
 
 export default function Home() {
@@ -54,13 +79,26 @@ export default function Home() {
   async function handleMintPassport() {
     setLoading(true);
     setResult(null);
+    let step = "init";
     try {
+      step = "getProvider";
       const provider = getProvider();
-      const utxos = await wallet.getUtxos();
-      const changeAddress = await wallet.getChangeAddress();
-      const collateral: UTxO[] = await wallet.getCollateral();
-      const usedAddresses = await wallet.getUsedAddresses();
-      const ownerPkh = resolvePaymentKeyHash(usedAddresses[0]);
+
+      step = "wallet.getUtxosMesh";
+      const utxos = await wallet.getUtxosMesh();
+      console.log("[mint] utxos:", utxos.length);
+
+      step = "wallet.getChangeAddressBech32";
+      const changeAddress = await wallet.getChangeAddressBech32();
+      console.log("[mint] changeAddress:", changeAddress);
+
+      step = "wallet.getCollateral";
+      const collateral: UTxO[] = await getCollateralUtxo(wallet, utxos);
+      console.log("[mint] collateral:", collateral.length);
+
+      step = "resolvePaymentKeyHash(changeAddress)";
+      const ownerPkh = resolvePaymentKeyHash(changeAddress);
+      console.log("[mint] ownerPkh:", ownerPkh);
 
       const harvestTimestamp = Math.floor(Date.now() / 1000);
       const datum = buildInitialDatum({
@@ -74,26 +112,26 @@ export default function Home() {
 
       const refTokenName = referenceTokenName(lotId);
       const usrTokenName = userTokenName(lotId);
+      console.log("[mint] refTokenName:", refTokenName);
+      console.log("[mint] usrTokenName:", usrTokenName);
+      console.log("[mint] scriptAddress:", passportScriptAddress);
 
+      step = "txBuilder.complete";
       const txBuilder = new MeshTxBuilder({ fetcher: provider, verbose: true });
 
       const unsignedTx = await txBuilder
-        // Mint reference token (100 label)
         .mintPlutusScriptV3()
         .mint("1", passportPolicyId, refTokenName)
         .mintingScript(scriptCbor)
         .mintRedeemerValue(mintPassportRedeemer)
-        // Mint user token (222 label)
         .mintPlutusScriptV3()
         .mint("1", passportPolicyId, usrTokenName)
         .mintingScript(scriptCbor)
         .mintRedeemerValue(mintPassportRedeemer)
-        // Send reference token to script address with inline datum
         .txOut(passportScriptAddress, [
           { unit: passportPolicyId + refTokenName, quantity: "1" },
         ])
         .txOutInlineDatumValue(datum)
-        // Collateral
         .txInCollateral(
           collateral[0].input.txHash,
           collateral[0].input.outputIndex,
@@ -103,12 +141,18 @@ export default function Home() {
         .changeAddress(changeAddress)
         .selectUtxosFrom(utxos)
         .complete();
+      console.log("[mint] unsignedTx length:", unsignedTx.length);
 
-      const signedTx = await wallet.signTx(unsignedTx, true);
+      step = "wallet.signTxReturnFullTx";
+      const signedTx = await wallet.signTxReturnFullTx(unsignedTx, true);
+      console.log("[mint] signedTx length:", signedTx.length);
+
+      step = "wallet.submitTx";
       const txHash = await wallet.submitTx(signedTx);
       setResult({ hash: txHash });
     } catch (e: any) {
-      setResult({ error: e.message || String(e) });
+      console.error(`[mint] failed at step "${step}":`, e);
+      setResult({ error: `[${step}] ${e?.message || String(e)}` });
     } finally {
       setLoading(false);
     }
@@ -119,11 +163,10 @@ export default function Home() {
     setResult(null);
     try {
       const provider = getProvider();
-      const utxos = await wallet.getUtxos();
-      const changeAddress = await wallet.getChangeAddress();
-      const collateral: UTxO[] = await wallet.getCollateral();
-      const usedAddresses = await wallet.getUsedAddresses();
-      const ownerPkh = resolvePaymentKeyHash(usedAddresses[0]);
+      const utxos = await wallet.getUtxosMesh();
+      const changeAddress = await wallet.getChangeAddressBech32();
+      const collateral: UTxO[] = await getCollateralUtxo(wallet, utxos);
+      const ownerPkh = resolvePaymentKeyHash(changeAddress);
 
       // Find the reference token UTxO at script address
       const refTokenName = referenceTokenName(lotId);
@@ -166,7 +209,7 @@ export default function Home() {
         .selectUtxosFrom(utxos)
         .complete();
 
-      const signedTx = await wallet.signTx(unsignedTx, true);
+      const signedTx = await wallet.signTxReturnFullTx(unsignedTx, true);
       const txHash = await wallet.submitTx(signedTx);
       setResult({ hash: txHash });
     } catch (e: any) {
@@ -181,11 +224,10 @@ export default function Home() {
     setResult(null);
     try {
       const provider = getProvider();
-      const utxos = await wallet.getUtxos();
-      const changeAddress = await wallet.getChangeAddress();
-      const collateral: UTxO[] = await wallet.getCollateral();
-      const usedAddresses = await wallet.getUsedAddresses();
-      const ownerPkh = resolvePaymentKeyHash(usedAddresses[0]);
+      const utxos = await wallet.getUtxosMesh();
+      const changeAddress = await wallet.getChangeAddressBech32();
+      const collateral: UTxO[] = await getCollateralUtxo(wallet, utxos);
+      const ownerPkh = resolvePaymentKeyHash(changeAddress);
 
       const refTokenName = referenceTokenName(lotId);
       const refAssetUnit = passportPolicyId + refTokenName;
@@ -224,7 +266,7 @@ export default function Home() {
         .selectUtxosFrom(utxos)
         .complete();
 
-      const signedTx = await wallet.signTx(unsignedTx, true);
+      const signedTx = await wallet.signTxReturnFullTx(unsignedTx, true);
       const txHash = await wallet.submitTx(signedTx);
       setResult({ hash: txHash });
     } catch (e: any) {

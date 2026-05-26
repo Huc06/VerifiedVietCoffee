@@ -1,14 +1,18 @@
-name = "veriviet/coffee-passport"
-version = "0.1.0"
+name = "veriviet/coffee_passport"
+version = "0.0.0"
+compiler = "v1.1.22"
+plutus = "v3"
 license = "Apache-2.0"
-description = "CIP-68 Coffee Passport for VerifiedVietCoffee"
+description = "Aiken contracts for project 'veriviet/coffee_passport'"
 
 [repository]
-user = "Huc06"
-project = "VerifiedVietCoffee"
+user = "veriviet"
+project = "coffee_passport"
 platform = "github"
 
 [[dependencies]]
 name = "aiken-lang/stdlib"
-version = "v2.2.0"
+version = "v3.1.0"
 source = "github"
+
+[config]

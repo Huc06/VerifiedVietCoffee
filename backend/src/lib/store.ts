@@ -45,11 +45,26 @@ export interface OracleSubmission {
   confirmed_at?: string;
 }
 
+export interface Lot {
+  id: string;
+  farm_id?: string;
+  variety?: string;
+  processing?: string;
+  harvest_date?: string;
+  weight_kg?: number;
+  sca_score?: number;
+  status?: string;
+  nft_token_name?: string;
+  nft_tx_hash?: string;
+  created_at?: string;
+}
+
 // In-memory fallback
 const mem = {
   events: [] as StoredEvent[],
   anchors: [] as DailyAnchor[],
   submissions: [] as OracleSubmission[],
+  lots: [] as Lot[],
 };
 
 export const store = {
@@ -240,6 +255,118 @@ export const store = {
     }
     const s = mem.submissions.find((x) => x.id === id);
     if (s) Object.assign(s, patch);
+  },
+
+  // ---- Lots ----
+  async insertLot(lot: Omit<Lot, "id" | "created_at">): Promise<Lot> {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("lots")
+        .insert(lot)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return data as Lot;
+    }
+    const l: Lot = {
+      ...lot,
+      id: randomUUID(),
+      created_at: new Date().toISOString(),
+    };
+    mem.lots.push(l);
+    return l;
+  },
+
+  async getLot(id: string): Promise<Lot | null> {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("lots")
+        .select("*")
+        .eq("id", id)
+        .single();
+      if (error) return null;
+      return data as Lot;
+    }
+    return mem.lots.find((l) => l.id === id) ?? null;
+  },
+
+  async listLots(): Promise<Lot[]> {
+    if (supabase) {
+      const { data } = await supabase
+        .from("lots")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      return (data || []) as Lot[];
+    }
+    return mem.lots;
+  },
+
+  async updateLot(id: string, patch: Partial<Lot>): Promise<Lot | null> {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("lots")
+        .update(patch)
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return data as Lot;
+    }
+    const l = mem.lots.find((x) => x.id === id);
+    if (l) Object.assign(l, patch);
+    return l ?? null;
+  },
+
+  // Mirror on-chain attestations into the `lots` table, keyed by the CIP-68
+  // text lot id stored in nft_token_name. Best-effort: returns the lot UUID
+  // or null. Never throws (callers wrap the on-chain tx, which is the source
+  // of truth — the DB row is just a convenience cache).
+  async upsertLotByTokenName(
+    lotId: string,
+    patch: Partial<Lot>,
+  ): Promise<string | null> {
+    if (!supabase) {
+      let l = mem.lots.find((x) => x.nft_token_name === lotId);
+      if (!l) {
+        l = { ...patch, id: randomUUID(), nft_token_name: lotId };
+        mem.lots.push(l);
+      } else {
+        Object.assign(l, patch);
+      }
+      return l.id;
+    }
+    try {
+      const { data: existing } = await supabase
+        .from("lots")
+        .select("id")
+        .eq("nft_token_name", lotId)
+        .maybeSingle();
+      if (existing?.id) {
+        await supabase.from("lots").update(patch).eq("id", existing.id);
+        return existing.id as string;
+      }
+      const { data, error } = await supabase
+        .from("lots")
+        .insert({ nft_token_name: lotId, ...patch })
+        .select("id")
+        .single();
+      if (error) return null;
+      return (data?.id as string) ?? null;
+    } catch {
+      return null;
+    }
+  },
+
+  async insertSustainabilityMetric(
+    row: Record<string, unknown>,
+  ): Promise<void> {
+    if (!supabase) return;
+    try {
+      await supabase.from("sustainability_metrics").insert(row);
+    } catch {
+      /* best-effort cache */
+    }
   },
 };
 

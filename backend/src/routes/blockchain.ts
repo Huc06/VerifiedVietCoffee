@@ -151,6 +151,12 @@ export async function blockchainRoutes(app: FastifyInstance) {
           tx_hash: txHash,
           status: "submitted",
         });
+      // Mirror off-chain into lots table (best-effort cache).
+      await store.upsertLotByTokenName(lot_id, {
+        sca_score,
+        status: "lab_verified",
+        nft_tx_hash: txHash,
+      });
       return { lot_id, tx_hash: txHash, status: "submitted" };
     } catch (err: any) {
       const msg = err?.message || String(err);
@@ -194,6 +200,22 @@ export async function blockchainRoutes(app: FastifyInstance) {
             tx_hash: txHash,
             status: "submitted",
           });
+        // Mirror off-chain: link a sustainability_metrics row to the lot UUID.
+        const lotUuid = await store.upsertLotByTokenName(lot_id, {
+          status: "sustainability_verified",
+          nft_tx_hash: txHash,
+        });
+        if (lotUuid) {
+          await store.insertSustainabilityMetric({
+            lot_id: lotUuid,
+            co2e_kg_per_kg_bean: metrics.co2e_per_kg,
+            water_l_per_kg_bean: metrics.water_l_per_kg,
+            organic_input_ratio_pct: metrics.organic_input_ratio_pct,
+            som_pct: metrics.som_pct,
+            shade_canopy_pct: metrics.shade_canopy_pct,
+            on_chain_tx_hash: txHash,
+          });
+        }
         return { lot_id, tx_hash: txHash, status: "submitted" };
       } catch (err: any) {
         const msg = err?.message || String(err);

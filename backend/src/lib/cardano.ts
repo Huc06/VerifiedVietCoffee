@@ -342,6 +342,59 @@ export interface SubmitResult {
   oraclePkh: string;
 }
 
+const MIN_COLLATERAL = BigInt(3_000_000); // 3 ADA
+const isLovelaceUnit = (unit: string) => unit === "lovelace" || unit === "";
+
+function findPureAda(utxos: UTxO[]): UTxO[] {
+  return utxos
+    .filter((u) => {
+      if (u.output.amount.length !== 1) return false;
+      if (!isLovelaceUnit(u.output.amount[0].unit)) return false;
+      try {
+        return BigInt(u.output.amount[0].quantity) >= MIN_COLLATERAL;
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) =>
+      BigInt(b.output.amount[0].quantity) > BigInt(a.output.amount[0].quantity)
+        ? 1
+        : -1,
+    );
+}
+
+// Return a collateral UTxO, auto-provisioning one if the wallet has none.
+// Mesh's headless wallet doesn't reserve collateral like Lace, and each script
+// spend consumes the previous pure-ADA UTxO, so we self-split a fresh 5 ADA
+// UTxO and poll until the chain confirms it.
+async function ensureCollateral(
+  wallet: MeshWallet,
+  pollSeconds = 90,
+): Promise<UTxO[]> {
+  const fromWallet = await wallet.getCollateral();
+  if (fromWallet.length) return fromWallet;
+
+  let pure = findPureAda(await wallet.getUtxos());
+  if (pure.length) return [pure[0]];
+
+  // No clean UTxO — split one and wait for confirmation.
+  console.log("[collateral] none found, auto-splitting 5 ADA…");
+  await setupOracleCollateral();
+  const deadline = Date.now() + pollSeconds * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 15_000));
+    pure = findPureAda(await wallet.getUtxos());
+    if (pure.length) {
+      console.log("[collateral] new pure-ADA UTxO confirmed");
+      return [pure[0]];
+    }
+  }
+  throw new Error(
+    "Auto-provisioned collateral but it did not confirm within " +
+      `${pollSeconds}s. Retry shortly.`,
+  );
+}
+
 // ---- Generic spend: mutate the datum + submit with the given redeemer ----
 async function submitDatumUpdate(
   lotId: string,
@@ -375,38 +428,9 @@ async function submitDatumUpdate(
   mutate(fields);
   const newDatum: Data = { alternative: 0, fields };
 
-  const utxos = await wallet.getUtxos();
   const changeAddress = await wallet.getChangeAddress();
-  let collateral = await wallet.getCollateral();
-  if (!collateral.length) {
-    const minLovelace = BigInt(3_000_000);
-    const isLovelace = (unit: string) => unit === "lovelace" || unit === "";
-    const pureAda = utxos
-      .filter((u) => {
-        const onlyAda =
-          u.output.amount.length === 1 && isLovelace(u.output.amount[0].unit);
-        if (!onlyAda) return false;
-        try {
-          return BigInt(u.output.amount[0].quantity) >= minLovelace;
-        } catch {
-          return false;
-        }
-      })
-      .sort((a, b) =>
-        BigInt(b.output.amount[0].quantity) >
-        BigInt(a.output.amount[0].quantity)
-          ? 1
-          : -1,
-      );
-    if (pureAda.length === 0) {
-      throw new Error(
-        `Oracle wallet has no pure-ADA UTxO (>= 3 ADA) to use as collateral ` +
-          `(${utxos.length} UTxOs total). Send the oracle address ` +
-          `at least 5 ADA in a fresh pure-ADA UTxO: ${changeAddress}`,
-      );
-    }
-    collateral = [pureAda[0]];
-  }
+  const collateral = await ensureCollateral(wallet);
+  const utxos = await wallet.getUtxos();
 
   const refTokenAssets = refUtxo.output.amount
     .filter((a) => a.unit !== "lovelace" && a.unit !== "")

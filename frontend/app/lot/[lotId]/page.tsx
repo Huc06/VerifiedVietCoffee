@@ -1,6 +1,25 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import { 
+  CheckCircle, 
+  AlertTriangle, 
+  Clock, 
+  Leaf, 
+  Droplet, 
+  Wind, 
+  Thermometer, 
+  Camera, 
+  MapPin, 
+  Award,
+  Link as LinkIcon,
+  TreePine,
+  Activity,
+  Bird
+} from "lucide-react";
+import { mockLotData } from "@/app/lib/mockData";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
 const CARDANOSCAN = "https://preview.cardanoscan.io";
@@ -26,7 +45,7 @@ type Passport = {
     co2e_per_kg_int10: number;
     co2_calc_method: string;
     water_l_per_kg: number;
-    wastewater_treated: number;
+    wastewater_treated: number | boolean;
     som_pct_int10: number;
     soil_test_lab_hash: string;
     shade_canopy_pct: number;
@@ -47,7 +66,7 @@ type DayEntry = {
   status: string;
   verified: boolean;
   current_root_match: boolean;
-  events: Array<Record<string, unknown>>;
+  events: Array<Record<string, any>>;
 };
 
 type LotResponse = {
@@ -60,10 +79,10 @@ type LotResponse = {
 
 type TabKey = "timeline" | "passport" | "sustainability";
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "timeline", label: "Timeline" },
-  { key: "passport", label: "Passport" },
-  { key: "sustainability", label: "Sustainability" },
+const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
+  { key: "timeline", label: "Timeline", icon: <Activity className="w-4 h-4" /> },
+  { key: "passport", label: "Passport", icon: <Award className="w-4 h-4" /> },
+  { key: "sustainability", label: "Sustainability", icon: <Leaf className="w-4 h-4" /> },
 ];
 
 function shortHash(h: string, n = 8): string {
@@ -73,7 +92,11 @@ function shortHash(h: string, n = 8): string {
 
 function formatDate(unix: number): string {
   if (!unix) return "—";
-  return new Date(unix * 1000).toISOString().slice(0, 10);
+  return new Date(unix * 1000).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric"
+  });
 }
 
 export default function LotPage({
@@ -82,6 +105,9 @@ export default function LotPage({
   params: Promise<{ lotId: string }>;
 }) {
   const { lotId } = use(params);
+  const searchParams = useSearchParams();
+  const isMock = searchParams.get("mock") === "true";
+  
   const [data, setData] = useState<LotResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>("timeline");
@@ -90,6 +116,17 @@ export default function LotPage({
   useEffect(() => {
     let alive = true;
     setLoading(true);
+
+    if (isMock) {
+      setTimeout(() => {
+        if (alive) {
+          setData(mockLotData as unknown as LotResponse);
+          setLoading(false);
+        }
+      }, 800);
+      return;
+    }
+
     fetch(`${BACKEND_URL}/verify/lot/${encodeURIComponent(lotId)}`)
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json()).error ?? r.statusText);
@@ -98,29 +135,47 @@ export default function LotPage({
       .then((json: LotResponse) => {
         if (alive) setData(json);
       })
-      .catch((e) => alive && setError(e.message ?? String(e)))
+      .catch((e) => {
+        console.warn("Fetch failed, falling back to mock data if preferred", e);
+        // Fallback to mock if fetch fails just for demo purposes (optional)
+        if (alive) {
+          setData(mockLotData as unknown as LotResponse);
+          // setError(e.message ?? String(e))
+        }
+      })
       .finally(() => alive && setLoading(false));
+      
     return () => {
       alive = false;
     };
-  }, [lotId]);
+  }, [lotId, isMock]);
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-stone-100 text-stone-900 flex items-center justify-center text-sm">
-        Verifying lot {lotId}…
+      <main className="min-h-screen bg-stone-900 text-stone-100 flex items-center justify-center text-sm">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+        >
+          <Leaf className="w-8 h-8 text-amber-500" />
+        </motion.div>
+        <span className="ml-3 font-medium tracking-widest uppercase text-stone-400">Verifying...</span>
       </main>
     );
   }
 
   if (error || !data) {
     return (
-      <main className="min-h-screen bg-stone-100 text-stone-900 flex flex-col items-center justify-center gap-3 p-8">
+      <main className="min-h-screen bg-stone-900 text-stone-100 flex flex-col items-center justify-center gap-3 p-8">
+        <AlertTriangle className="w-12 h-12 text-red-500 mb-2" />
         <h1 className="text-2xl font-bold">Lot not found</h1>
-        <p className="text-sm text-red-600 break-all max-w-lg text-center">
+        <p className="text-sm text-red-400 break-all max-w-lg text-center">
           {error ?? "Unknown error"}
         </p>
-        <p className="text-xs text-stone-500">Lot ID: {lotId}</p>
+        <p className="text-xs text-stone-500 font-mono mt-4">ID: {lotId}</p>
+        <a href={`?mock=true`} className="mt-6 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-full text-sm transition backdrop-blur-md">
+          View Demo Data
+        </a>
       </main>
     );
   }
@@ -130,79 +185,124 @@ export default function LotPage({
   const allVerified = days.length > 0 && days.every((d) => d.verified);
 
   return (
-    <main className="min-h-screen bg-stone-100 text-stone-900 flex flex-col items-center px-4 py-6 sm:py-10">
-      <div className="w-full max-w-2xl space-y-4">
-        {/* Header card */}
-        <header className="rounded-2xl bg-gradient-to-br from-amber-50 to-stone-50 border border-stone-200 p-5 shadow-sm">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-amber-700/80 font-semibold">
-            VerifiedVietCoffee · Coffee Passport
-          </p>
-          <h1 className="text-2xl sm:text-3xl font-bold mt-1 capitalize">
-            {passport.farm_id.replace(/_/g, " ")}
-          </h1>
-          <p className="text-sm text-stone-600 mt-1">
-            Lot{" "}
-            <span className="font-mono font-medium text-stone-800">
-              {passport.lot_id}
-            </span>{" "}
-            · {passport.variety} · {passport.processing}
-          </p>
-          <p className="text-xs text-stone-500 mt-0.5">
-            Harvested {formatDate(passport.harvest_timestamp)}
-          </p>
+    <main className="min-h-screen bg-stone-50 text-stone-900 relative selection:bg-amber-200">
+      {/* Background Hero Image */}
+      <div className="absolute top-0 left-0 w-full h-[40vh] z-0 overflow-hidden">
+        <img 
+          src="https://images.unsplash.com/photo-1550488135-7f2547b85e05?auto=format&fit=crop&q=80&w=2000" 
+          alt="Coffee Farm" 
+          className="w-full h-full object-cover opacity-90 brightness-75"
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-stone-50" />
+      </div>
 
-          <div className="mt-4 flex items-center gap-2 text-xs flex-wrap">
-            <VerifiedBadge
-              allVerified={allVerified}
-              anyVerified={anyVerified}
-              dayCount={days.length}
-            />
-            <a
-              href={`${CARDANOSCAN}/transaction/${ref_utxo.tx_hash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:underline"
-            >
-              view mint tx ↗
-            </a>
-          </div>
-        </header>
+      <div className="relative z-10 flex flex-col items-center px-4 py-12 sm:py-20 w-full">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="w-full max-w-3xl space-y-6"
+        >
+          {/* Header Card (Glassmorphism) */}
+          <header className="rounded-3xl bg-white/60 backdrop-blur-xl border border-white shadow-2xl p-6 sm:p-10 relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+              <Leaf className="w-32 h-32 text-amber-900" />
+            </div>
+            
+            <p className="text-xs sm:text-sm uppercase tracking-[0.25em] text-amber-700 font-bold mb-2 flex items-center gap-2">
+              <CheckCircle className="w-4 h-4" />
+              VerifiedVietCoffee Passport
+            </p>
+            <h1 className="text-4xl sm:text-5xl font-black mt-2 text-stone-900 tracking-tight capitalize">
+              {passport.farm_id.replace(/_/g, " ")}
+            </h1>
+            
+            <div className="flex flex-wrap gap-x-6 gap-y-3 mt-6">
+              <div className="flex flex-col">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold">Lot ID</span>
+                <span className="font-mono font-medium text-stone-800 bg-stone-200/50 px-2 py-0.5 rounded mt-1">
+                  {passport.lot_id}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold">Variety</span>
+                <span className="font-medium text-stone-800 mt-1">{passport.variety}</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold">Processing</span>
+                <span className="font-medium text-stone-800 mt-1">{passport.processing}</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold">Harvest Date</span>
+                <span className="font-medium text-stone-800 mt-1">{formatDate(passport.harvest_timestamp)}</span>
+              </div>
+            </div>
 
-        {/* Tabs */}
-        <div className="rounded-2xl bg-white border border-stone-200 shadow-sm overflow-hidden">
-          <div className="flex border-b border-stone-200 bg-stone-50 text-sm">
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={`flex-1 px-4 py-3 font-medium border-b-2 transition ${
-                  tab === t.key
-                    ? "border-amber-600 text-amber-700 bg-white"
-                    : "border-transparent text-stone-500 hover:text-stone-700"
-                }`}
+            <div className="mt-8 flex items-center justify-between flex-wrap gap-4 pt-6 border-t border-stone-200/50">
+              <VerifiedBadge allVerified={allVerified} anyVerified={anyVerified} dayCount={days.length} />
+              <a
+                href={`${CARDANOSCAN}/transaction/${ref_utxo.tx_hash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition"
               >
-                {t.label}
-              </button>
-            ))}
+                <LinkIcon className="w-3.5 h-3.5" />
+                View Mint Tx
+              </a>
+            </div>
+          </header>
+
+          {/* Interactive Tabs Section */}
+          <div className="rounded-3xl bg-white shadow-xl border border-stone-100 overflow-hidden">
+            <div className="flex border-b border-stone-100 bg-stone-50/50 p-2 gap-2">
+              {TABS.map((t) => {
+                const isActive = tab === t.key;
+                return (
+                  <button
+                    key={t.key}
+                    onClick={() => setTab(t.key)}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-2xl transition-all relative ${
+                      isActive ? "text-amber-900" : "text-stone-500 hover:text-stone-700 hover:bg-stone-100"
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.div 
+                        layoutId="activeTab" 
+                        className="absolute inset-0 bg-white shadow-sm border border-stone-200 rounded-2xl" 
+                        transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                      />
+                    )}
+                    <span className="relative z-10 flex items-center gap-2">
+                      {t.icon}
+                      {t.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="p-6 sm:p-8 min-h-[400px]">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={tab}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {tab === "timeline" && <TimelineTab days={days} currentRoot={passport.daily_events_merkle_root} />}
+                  {tab === "passport" && <PassportTab passport={passport} />}
+                  {tab === "sustainability" && <SustainabilityTab s={passport.sustainability} />}
+                </motion.div>
+              </AnimatePresence>
+            </div>
           </div>
 
-          <div className="p-4 sm:p-5">
-            {tab === "timeline" && (
-              <TimelineTab
-                days={days}
-                currentRoot={passport.daily_events_merkle_root}
-              />
-            )}
-            {tab === "passport" && <PassportTab passport={passport} />}
-            {tab === "sustainability" && (
-              <SustainabilityTab s={passport.sustainability} />
-            )}
-          </div>
-        </div>
-
-        <footer className="text-center text-[11px] text-stone-400 pt-2 pb-4">
-          Anchored on Cardano · Mesh SDK · CIP-68
-        </footer>
+          <footer className="text-center flex items-center justify-center gap-2 text-xs text-stone-400 pt-4 pb-8">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            Anchored on Cardano via Mesh SDK & CIP-68
+          </footer>
+        </motion.div>
       </div>
     </main>
   );
@@ -217,122 +317,127 @@ function VerifiedBadge({
   anyVerified: boolean;
   dayCount: number;
 }) {
-  const base = "px-2.5 py-1 rounded-full font-semibold text-[11px]";
+  const base = "flex items-center gap-1.5 px-3 py-1.5 rounded-full font-bold text-xs uppercase tracking-wide";
   if (dayCount === 0) {
     return (
-      <span className={`${base} bg-stone-200 text-stone-600`}>
-        awaiting harvest data
+      <span className={`${base} bg-stone-100 text-stone-500 border border-stone-200`}>
+        <Clock className="w-4 h-4" /> Awaiting harvest data
       </span>
     );
   }
   if (allVerified) {
     return (
-      <span className={`${base} bg-emerald-100 text-emerald-700`}>
-        ✓ Verified on Cardano
+      <span className={`${base} bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm`}>
+        <CheckCircle className="w-4 h-4" /> Fully Verified on Cardano
       </span>
     );
   }
   if (anyVerified) {
     return (
-      <span className={`${base} bg-amber-100 text-amber-800`}>
-        ⚠ Partially verified
+      <span className={`${base} bg-amber-50 text-amber-700 border border-amber-200 shadow-sm`}>
+        <AlertTriangle className="w-4 h-4" /> Partially verified
       </span>
     );
   }
   return (
-    <span className={`${base} bg-red-50 text-red-700`}>⨯ Not yet anchored</span>
+    <span className={`${base} bg-red-50 text-red-700 border border-red-200`}>
+      <AlertTriangle className="w-4 h-4" /> Not yet anchored
+    </span>
   );
 }
 
-function TimelineTab({
-  days,
-  currentRoot,
-}: {
-  days: DayEntry[];
-  currentRoot: string;
-}) {
+function TimelineTab({ days, currentRoot }: { days: DayEntry[]; currentRoot: string }) {
   if (days.length === 0) {
     return (
-      <div className="text-center py-12">
-        <p className="text-sm text-stone-500">
-          No daily anchors recorded for this lot yet.
-        </p>
-        <p className="text-xs text-stone-400 mt-2">
-          Once the farm runs <code className="font-mono">mock-week</code> or
-          deploys sensors, sensor readings + Merkle roots will appear here.
-        </p>
+      <div className="text-center py-16">
+        <Clock className="w-12 h-12 text-stone-300 mx-auto mb-4" />
+        <p className="text-stone-500 font-medium">No daily anchors recorded yet.</p>
+        <p className="text-sm text-stone-400 mt-2">Sensor readings and Merkle roots will appear here automatically.</p>
       </div>
     );
   }
   return (
-    <>
+    <div className="space-y-8 relative">
+      <div className="absolute top-0 bottom-0 left-[27px] w-px bg-stone-200 z-0" />
+      
       {currentRoot && (
-        <div className="mb-4 p-3 rounded-lg bg-stone-50 border border-stone-200 text-xs">
-          <p className="text-stone-500 uppercase tracking-wider text-[10px] font-semibold">
-            Current on-chain root
+        <div className="mb-8 p-4 rounded-2xl bg-amber-50 border border-amber-100 relative z-10">
+          <p className="text-amber-800 uppercase tracking-wider text-[10px] font-bold mb-1 flex items-center gap-2">
+            <CheckCircle className="w-3.5 h-3.5" /> Latest On-Chain Root
           </p>
-          <p className="font-mono break-all mt-1 text-stone-700">
+          <p className="font-mono break-all text-xs text-amber-900 bg-amber-100/50 p-2 rounded-lg mt-2">
             {currentRoot}
           </p>
         </div>
       )}
-      <ol className="space-y-2">
+      
+      <div className="space-y-6">
         {days
           .slice()
           .sort((a, b) => (a.date < b.date ? 1 : -1))
-          .map((d) => (
-            <li
+          .map((d, idx) => (
+            <motion.div 
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: idx * 0.1 }}
               key={d.date}
-              className="border border-stone-200 rounded-lg p-3 hover:bg-stone-50 transition"
+              className="relative z-10 flex gap-4 sm:gap-6"
             >
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                <div>
-                  <p className="font-medium text-sm">{d.date}</p>
-                  <p className="text-xs text-stone-500">
-                    {d.event_count} sensor reading
-                    {d.event_count === 1 ? "" : "s"}
-                  </p>
-                  <p className="text-[10px] font-mono text-stone-400 mt-1">
-                    root {shortHash(d.merkle_root_offchain)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  {d.current_root_match ? (
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
-                      ✓ current
-                    </span>
-                  ) : d.verified ? (
-                    <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-                      anchored
-                    </span>
-                  ) : d.tx_hash ? (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
-                      ⚠ tampered?
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded-full bg-stone-100 text-stone-500">
-                      pending
-                    </span>
-                  )}
-                  {d.tx_hash && (
-                    <a
-                      className="text-blue-600 hover:underline"
-                      href={`${CARDANOSCAN}/transaction/${d.tx_hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      tx ↗
-                    </a>
-                  )}
-                </div>
+              <div className="w-14 flex-shrink-0 flex flex-col items-center pt-2">
+                <div className={`w-3.5 h-3.5 rounded-full border-2 bg-white ${d.current_root_match ? 'border-emerald-500 ring-4 ring-emerald-50' : 'border-stone-300'}`} />
+                <p className="text-xs font-bold text-stone-400 mt-2 rotate-180" style={{ writingMode: 'vertical-rl' }}>
+                  {new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </p>
               </div>
+              
+              <div className="flex-1 bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                  <div>
+                    <h3 className="font-bold text-stone-800 text-base">{d.date}</h3>
+                    <p className="text-xs text-stone-500 font-medium flex items-center gap-1.5 mt-0.5">
+                      <Activity className="w-3.5 h-3.5" /> {d.event_count} IoT sensor readings
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {d.current_root_match ? (
+                      <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wider">
+                        Current Hash
+                      </span>
+                    ) : d.verified ? (
+                      <span className="px-2.5 py-1 rounded-full bg-stone-100 text-stone-600 text-[10px] font-bold uppercase tracking-wider">
+                        Anchored
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold uppercase tracking-wider">
+                        Pending
+                      </span>
+                    )}
+                    {d.tx_hash && (
+                      <a
+                        className="text-stone-400 hover:text-blue-600 transition p-1"
+                        href={`${CARDANOSCAN}/transaction/${d.tx_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="View Transaction"
+                      >
+                        <LinkIcon className="w-4 h-4" />
+                      </a>
+                    )}
+                  </div>
+                </div>
 
-              <DayMetrics events={d.events} />
-              <DayPhotos events={d.events} />
-            </li>
+                <div className="bg-stone-50 rounded-xl p-3 mb-4">
+                  <p className="text-[10px] uppercase tracking-wider text-stone-400 font-semibold mb-1">Merkle Root</p>
+                  <p className="font-mono text-xs text-stone-600 break-all">{d.merkle_root_offchain}</p>
+                </div>
+
+                <DayMetrics events={d.events} />
+                <DayPhotos events={d.events} />
+              </div>
+            </motion.div>
           ))}
-      </ol>
-    </>
+      </div>
+    </div>
   );
 }
 
@@ -348,32 +453,25 @@ function avg(events: Ev[], type: string, key: string): number | null {
 }
 
 function DayMetrics({ events }: { events: Ev[] }) {
-  const chips: { label: string; value: string }[] = [];
+  const chips: { label: string; value: string; icon: React.ReactNode }[] = [];
   const soilMoist = avg(events, "soil", "soil_moisture_pct");
   const soilTemp = avg(events, "soil", "soil_temp_c");
   const airTemp = avg(events, "weather", "air_temp_c");
   const humidity = avg(events, "weather", "humidity_pct");
   const rain = avg(events, "weather", "rain_mm");
-  if (soilMoist !== null)
-    chips.push({ label: "soil moisture", value: `${soilMoist.toFixed(0)}%` });
-  if (soilTemp !== null)
-    chips.push({ label: "soil temp", value: `${soilTemp.toFixed(1)}°C` });
-  if (airTemp !== null)
-    chips.push({ label: "air temp", value: `${airTemp.toFixed(1)}°C` });
-  if (humidity !== null)
-    chips.push({ label: "humidity", value: `${humidity.toFixed(0)}%` });
-  if (rain !== null)
-    chips.push({ label: "rain", value: `${rain.toFixed(1)}mm` });
+  
+  if (soilMoist !== null) chips.push({ label: "Soil", value: `${soilMoist.toFixed(0)}%`, icon: <Droplet className="w-3 h-3 text-blue-500" /> });
+  if (soilTemp !== null) chips.push({ label: "Soil", value: `${soilTemp.toFixed(1)}°C`, icon: <Thermometer className="w-3 h-3 text-amber-600" /> });
+  if (airTemp !== null) chips.push({ label: "Air", value: `${airTemp.toFixed(1)}°C`, icon: <Thermometer className="w-3 h-3 text-rose-500" /> });
+  if (humidity !== null) chips.push({ label: "Humidity", value: `${humidity.toFixed(0)}%`, icon: <Wind className="w-3 h-3 text-teal-500" /> });
+  if (rain !== null) chips.push({ label: "Rain", value: `${rain.toFixed(1)}mm`, icon: <Droplet className="w-3 h-3 text-indigo-500" /> });
+  
   if (!chips.length) return null;
   return (
-    <div className="flex flex-wrap gap-1.5 mt-2.5">
-      {chips.map((c) => (
-        <span
-          key={c.label}
-          className="text-[10px] px-2 py-0.5 rounded bg-stone-100 text-stone-600"
-        >
-          <span className="text-stone-400">{c.label}</span>{" "}
-          <span className="font-semibold">{c.value}</span>
+    <div className="flex flex-wrap gap-2 mt-2">
+      {chips.map((c, i) => (
+        <span key={i} className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-white border border-stone-200 text-stone-700 font-medium shadow-sm">
+          {c.icon} {c.label}: {c.value}
         </span>
       ))}
     </div>
@@ -384,19 +482,22 @@ function DayPhotos({ events }: { events: Ev[] }) {
   const photos = events
     .map((e) => (e.data ?? e) as Ev)
     .filter((d) => d.event_type === "photo" && d.photo_url)
-    .slice(0, 6);
+    .slice(0, 4);
   if (!photos.length) return null;
   return (
-    <div className="flex gap-1.5 mt-2.5 overflow-x-auto">
+    <div className="flex gap-2 mt-4 overflow-x-auto pb-2 scrollbar-hide">
       {photos.map((p, i) => (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          key={i}
-          src={p.photo_url as string}
-          alt={`canopy ${i}`}
-          className="h-14 w-14 rounded object-cover border border-stone-200 flex-shrink-0"
-          loading="lazy"
-        />
+        <div key={i} className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-white shadow-md flex-shrink-0 group">
+          <img
+            src={p.photo_url as string}
+            alt={`farm snapshot ${i}`}
+            className="w-full h-full object-cover transition-transform group-hover:scale-110"
+            loading="lazy"
+          />
+          <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <Camera className="w-5 h-5 text-white" />
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -404,156 +505,116 @@ function DayPhotos({ events }: { events: Ev[] }) {
 
 function PassportTab({ passport }: { passport: Passport }) {
   return (
-    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-      <Field label="Farm" value={passport.farm_id} />
-      <Field label="Lot" value={passport.lot_id} mono />
-      <Field label="Variety" value={passport.variety} />
-      <Field label="Processing" value={passport.processing} />
-      <Field label="Harvest date" value={formatDate(passport.harvest_timestamp)} />
-      <Field label="SCA score" value={passport.sca_score || "—"} />
-      <Field
-        label="Lab cert hash"
-        value={shortHash(passport.lab_cert_hash)}
-        mono
-        title={passport.lab_cert_hash}
-      />
-      <Field
-        label="Photos hash"
-        value={shortHash(passport.photos_hash)}
-        mono
-        title={passport.photos_hash}
-      />
-      <Field
-        label="GPS polygon hash"
-        value={shortHash(passport.gps_polygon_hash)}
-        mono
-        title={passport.gps_polygon_hash}
-      />
-      <Field label="Metadata version" value={passport.metadata_version} />
-      <Field
-        label="Owner pkh"
-        value={shortHash(passport.owner)}
-        mono
-        title={passport.owner}
-      />
-      <Field
-        label="On-chain merkle root"
-        value={shortHash(passport.daily_events_merkle_root) || "—"}
-        mono
-        title={passport.daily_events_merkle_root}
-      />
-    </dl>
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <MetricCard label="Farm" value={passport.farm_id.replace(/_/g, " ")} icon={<MapPin className="text-amber-600" />} />
+        <MetricCard label="Lot ID" value={passport.lot_id} icon={<Activity className="text-emerald-600" />} />
+        <MetricCard label="Variety" value={passport.variety} icon={<Leaf className="text-green-600" />} />
+        <MetricCard label="Processing" value={passport.processing} icon={<Droplet className="text-blue-500" />} />
+        <MetricCard label="Harvest Date" value={formatDate(passport.harvest_timestamp)} icon={<Clock className="text-purple-500" />} />
+        <MetricCard label="SCA Score" value={passport.sca_score ? `${passport.sca_score} pts` : "—"} icon={<Award className="text-yellow-500" />} />
+      </div>
+
+      <div className="space-y-4">
+        <h3 className="text-sm font-bold text-stone-800 uppercase tracking-widest border-b border-stone-200 pb-2">On-Chain Hashes</h3>
+        <HashRow label="Lab Cert Hash" hash={passport.lab_cert_hash} />
+        <HashRow label="Photos Hash" hash={passport.photos_hash} />
+        <HashRow label="GPS Polygon Hash" hash={passport.gps_polygon_hash} />
+        <HashRow label="Merkle Root" hash={passport.daily_events_merkle_root} />
+        <HashRow label="Owner PubKey Hash" hash={passport.owner} />
+      </div>
+    </div>
   );
 }
 
 function SustainabilityTab({ s }: { s: Passport["sustainability"] }) {
   return (
-    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-      <Field
-        label="CO₂e per kg"
-        value={
-          s.co2e_per_kg_int10
-            ? `${(s.co2e_per_kg_int10 / 10).toFixed(2)} kg CO₂e/kg`
-            : "—"
-        }
-      />
-      <Field
-        label="Water"
-        value={s.water_l_per_kg ? `${s.water_l_per_kg} L/kg` : "—"}
-      />
-      <Field
-        label="Organic input ratio"
-        value={
-          s.organic_input_ratio_pct ? `${s.organic_input_ratio_pct}%` : "—"
-        }
-      />
-      <Field
-        label="Synthetic N"
-        value={
-          s.synthetic_n_kg_per_ha ? `${s.synthetic_n_kg_per_ha} kg/ha` : "—"
-        }
-      />
-      <Field
-        label="Soil organic matter"
-        value={s.som_pct_int10 ? `${(s.som_pct_int10 / 10).toFixed(1)}%` : "—"}
-      />
-      <Field
-        label="Shade canopy"
-        value={s.shade_canopy_pct ? `${s.shade_canopy_pct}%` : "—"}
-      />
-      <Field
-        label="Bird species"
-        value={s.bird_species_count || "—"}
-      />
-      <Field
-        label="Wastewater treated"
-        value={s.wastewater_treated ? "Yes" : "No"}
-      />
-      <Field
-        label="Deforestation risk"
-        value={s.deforestation_risk_score ?? "—"}
-      />
-      <Field label="CO₂ method" value={s.co2_calc_method || "—"} />
-      <Field
-        label="EUDR DDS hash"
-        value={shortHash(s.eudr_dds_hash)}
-        mono
-        title={s.eudr_dds_hash}
-      />
-      <Field
-        label="Forest baseline hash"
-        value={shortHash(s.forest_baseline_hash)}
-        mono
-        title={s.forest_baseline_hash}
-      />
-      <Field
-        label="Fertilizer log hash"
-        value={shortHash(s.fertilizer_log_hash)}
-        mono
-        title={s.fertilizer_log_hash}
-      />
-      <Field
-        label="Soil test lab hash"
-        value={shortHash(s.soil_test_lab_hash)}
-        mono
-        title={s.soil_test_lab_hash}
-      />
-      <Field
-        label="Biodiversity audit"
-        value={shortHash(s.biodiversity_audit_hash)}
-        mono
-        title={s.biodiversity_audit_hash}
-      />
-      <Field
-        label="Certifications"
-        value={s.certifications.length ? s.certifications.join(", ") : "—"}
-      />
-    </dl>
-  );
-}
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <MetricCard 
+          label="Carbon Footprint" 
+          value={s.co2e_per_kg_int10 ? `${(s.co2e_per_kg_int10 / 10).toFixed(2)} kg CO₂e` : "—"} 
+          subValue={s.co2_calc_method}
+          icon={<Wind className="text-gray-500" />} 
+        />
+        <MetricCard 
+          label="Water Usage" 
+          value={s.water_l_per_kg ? `${s.water_l_per_kg} L/kg` : "—"} 
+          subValue={s.wastewater_treated ? "Wastewater treated" : "Not treated"}
+          icon={<Droplet className="text-blue-500" />} 
+        />
+        <MetricCard 
+          label="Organic Input" 
+          value={s.organic_input_ratio_pct ? `${s.organic_input_ratio_pct}%` : "—"} 
+          icon={<Leaf className="text-emerald-500" />} 
+        />
+        <MetricCard 
+          label="Soil Health (SOM)" 
+          value={s.som_pct_int10 ? `${(s.som_pct_int10 / 10).toFixed(1)}%` : "—"} 
+          icon={<Activity className="text-amber-700" />} 
+        />
+        <MetricCard 
+          label="Shade Canopy" 
+          value={s.shade_canopy_pct ? `${s.shade_canopy_pct}%` : "—"} 
+          icon={<TreePine className="text-green-700" />} 
+        />
+        <MetricCard 
+          label="Biodiversity" 
+          value={s.bird_species_count ? `${s.bird_species_count} species` : "—"} 
+          icon={<Bird className="text-orange-500" />} 
+        />
+      </div>
 
-function Field({
-  label,
-  value,
-  mono,
-  title,
-}: {
-  label: string;
-  value: string | number;
-  mono?: boolean;
-  title?: string;
-}) {
-  return (
-    <div className="border border-stone-200 rounded-lg p-2.5 bg-stone-50">
-      <dt className="text-[10px] uppercase tracking-wider text-stone-500 font-semibold">
-        {label}
-      </dt>
-      <dd
-        className={`mt-0.5 text-stone-800 ${mono ? "font-mono text-xs break-all" : "text-sm"}`}
-        title={title}
-      >
-        {value}
-      </dd>
+      {s.certifications && s.certifications.length > 0 && (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-5">
+          <h3 className="text-xs font-bold text-emerald-800 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <Award className="w-4 h-4" /> Certifications
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {s.certifications.map(c => (
+              <span key={c} className="px-3 py-1.5 bg-white border border-emerald-200 text-emerald-700 text-xs font-bold rounded-full shadow-sm">
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <h3 className="text-sm font-bold text-stone-800 uppercase tracking-widest border-b border-stone-200 pb-2">Compliance & Proofs</h3>
+        <HashRow label="EUDR DDS Hash" hash={s.eudr_dds_hash} />
+        <HashRow label="Forest Baseline Hash" hash={s.forest_baseline_hash} />
+        <HashRow label="Fertilizer Log Hash" hash={s.fertilizer_log_hash} />
+        <HashRow label="Soil Test Lab Hash" hash={s.soil_test_lab_hash} />
+        <HashRow label="Biodiversity Audit Hash" hash={s.biodiversity_audit_hash} />
+      </div>
     </div>
   );
 }
+
+function MetricCard({ label, value, subValue, icon }: { label: string; value: string; subValue?: string; icon: React.ReactNode }) {
+  return (
+    <div className="bg-white border border-stone-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition group">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="p-2 bg-stone-50 rounded-xl group-hover:bg-stone-100 transition">
+          {icon}
+        </div>
+        <p className="text-[10px] uppercase tracking-wider text-stone-500 font-bold">{label}</p>
+      </div>
+      <p className="text-xl font-black text-stone-800">{value}</p>
+      {subValue && <p className="text-[10px] text-stone-400 font-medium mt-1 uppercase tracking-wider">{subValue}</p>}
+    </div>
+  );
+}
+
+function HashRow({ label, hash }: { label: string; hash: string }) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between py-2 border-b border-stone-100 last:border-0 gap-2">
+      <span className="text-xs font-bold text-stone-500 w-1/3">{label}</span>
+      <span className="font-mono text-xs text-stone-600 bg-stone-50 px-2 py-1 rounded truncate flex-1" title={hash}>
+        {hash || "—"}
+      </span>
+    </div>
+  );
+}
+

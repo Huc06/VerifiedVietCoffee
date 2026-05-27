@@ -1,550 +1,232 @@
 "use client";
 
-import { useState } from "react";
-import { CardanoWallet, useWallet } from "@meshsdk/react";
-import { QRCodeSVG } from "qrcode.react";
-import {
-  MeshTxBuilder,
-  BlockfrostProvider,
-  resolvePaymentKeyHash,
-} from "@meshsdk/core";
-import type { UTxO } from "@meshsdk/core";
-import {
-  scriptCbor,
-  passportScriptAddress,
-  passportPolicyId,
-  mintPassportRedeemer,
-  updateEventsRedeemer,
-  updateLabRedeemer,
-  referenceTokenName,
-  userTokenName,
-  buildInitialDatum,
-} from "@/app/lib/coffee-passport";
+import { useState, useEffect } from "react";
+import Image from "next/image";
+import { useWallet } from "@meshsdk/react";
+import { MeshTxBuilder, UTxO } from "@meshsdk/core";
+import { Sidebar, TabKey } from "@/components/dashboard/Sidebar";
+import { Header } from "@/components/dashboard/Header";
+import { MintForm } from "@/components/dashboard/MintForm";
+import { UpdateEventsForm } from "@/components/dashboard/UpdateEventsForm";
+import { LabForm } from "@/components/dashboard/LabForm";
+import { SustainForm } from "@/components/dashboard/SustainForm";
+import { TransactionResult, TxResult } from "@/components/dashboard/TransactionResult";
 
 const BLOCKFROST_KEY = process.env.NEXT_PUBLIC_BLOCKFROST_KEY || "";
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
+const CARDANOSCAN = "https://preview.cardanoscan.io";
 
-// Lace's CIP-30 getCollateral returns null when no dedicated collateral UTxO
-// is configured (Mesh's getCollateralMesh() then crashes on .map()). Fall
-// back to the largest pure-ADA UTxO from the wallet (>= 3 ADA, the minimum
-// the protocol needs for a Plutus tx at current params).
 async function getCollateralUtxo(wallet: any, utxos: UTxO[]): Promise<UTxO[]> {
   try {
-    const fromWallet = await wallet.getCollateralMesh();
-    if (fromWallet && fromWallet.length > 0) {
-      console.log("[collateral] from wallet:", fromWallet);
-      return fromWallet;
-    }
+    const collaterals = await wallet.getCollateral();
+    if (collaterals && collaterals.length > 0) return collaterals;
   } catch (e) {
-    console.warn("[collateral] getCollateralMesh threw, falling back:", e);
+    console.warn("Wallet getCollateral() failed, using manual UTxO selection");
   }
-
-  const minLovelace = BigInt(3_000_000); // 3 ADA
-  const isLovelace = (unit: string) => unit === "lovelace" || unit === "";
-
-  const pureAda = utxos
-    .filter((u) => {
-      const onlyAda =
-        u.output.amount.length === 1 && isLovelace(u.output.amount[0].unit);
-      if (!onlyAda) return false;
-      try {
-        return BigInt(u.output.amount[0].quantity) >= minLovelace;
-      } catch {
-        return false;
-      }
-    })
-    // largest first
-    .sort((a, b) =>
-      BigInt(b.output.amount[0].quantity) >
-      BigInt(a.output.amount[0].quantity)
-        ? 1
-        : -1,
-    );
-
-  console.log(
-    `[collateral] wallet utxos: ${utxos.length}, pure-ADA >= 3: ${pureAda.length}`,
-  );
-  if (utxos.length > 0) {
-    console.log(
-      "[collateral] first 3 utxos:",
-      utxos.slice(0, 3).map((u) => ({
-        units: u.output.amount.map((a) => a.unit),
-        qtys: u.output.amount.map((a) => a.quantity),
-      })),
-    );
-  }
-
-  if (pureAda.length === 0) {
-    throw new Error(
-      `No pure-ADA collateral UTxO (>= 3 ADA) found in your wallet ` +
-        `(${utxos.length} UTxOs total). Either:\n` +
-        `  1) Set up a dedicated 5 ADA collateral in Lace ` +
-        `(Settings → Network → Collateral), OR\n` +
-        `  2) Send yourself a small pure-ADA UTxO (e.g. 5 tADA) so the dApp ` +
-        `has a clean input to use as collateral.`,
-    );
-  }
-  return [pureAda[0]];
+  const adaOnly = utxos.filter((u) => u.output.amount.length === 1 && u.output.amount[0].unit === "lovelace");
+  adaOnly.sort((a, b) => Number(b.output.amount[0].quantity) - Number(a.output.amount[0].quantity));
+  if (adaOnly.length === 0) throw new Error("No collateral UTxO found");
+  return [adaOnly[0]];
 }
 
-type TxResult = { hash: string; error?: never } | { hash?: never; error: string };
-
-export default function Home() {
-  const { wallet, connected } = useWallet();
-  const [tab, setTab] = useState<"mint" | "update" | "lab">("mint");
+export default function FarmDashboard() {
+  const { connected, wallet } = useWallet();
+  const [activeTab, setActiveTab] = useState<TabKey>("mint");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TxResult | null>(null);
 
-  // Mint form
-  const [farmId, setFarmId] = useState("binhdong_farm");
-  const [lotId, setLotId] = useState("LD-2026-0527");
+  const [scriptAddress, setScriptAddress] = useState<string>("");
+  const [policyId, setPolicyId] = useState<string>("");
+
+  const [lotId, setLotId] = useState("");
+  const [farmId, setFarmId] = useState("");
   const [variety, setVariety] = useState("Robusta");
   const [processing, setProcessing] = useState("Honey");
-
-  // Update Events form
+  
   const [merkleRoot, setMerkleRoot] = useState("");
   const [photosHash, setPhotosHash] = useState("");
 
-  // Update Lab form
-  const [scaScore, setScaScore] = useState("84");
+  const [scaScore, setScaScore] = useState("");
   const [labCertHash, setLabCertHash] = useState("");
 
-  function getProvider() {
-    if (!BLOCKFROST_KEY || BLOCKFROST_KEY === "your_blockfrost_preview_key_here") {
-      throw new Error("Set NEXT_PUBLIC_BLOCKFROST_KEY in .env.local");
-    }
-    return new BlockfrostProvider(BLOCKFROST_KEY);
-  }
+  const [co2e, setCo2e] = useState("");
+  const [waterL, setWaterL] = useState("");
+  const [organicPct, setOrganicPct] = useState("");
+  const [somPct, setSomPct] = useState("");
+  const [shadePct, setShadePct] = useState("");
+  const [eudrHash, setEudrHash] = useState("");
 
-  async function handleMintPassport() {
+  useEffect(() => {
+    fetch(`${BACKEND_URL}/blockchain/info`)
+      .then((res) => res.json())
+      .then((data) => {
+        setScriptAddress(data.scriptAddress);
+        setPolicyId(data.policyId);
+      })
+      .catch((err) => console.error("Failed to fetch blockchain info:", err));
+  }, []);
+
+  const handleError = (error: any) => {
+    console.error(error);
+    setResult({ error: error?.message || String(error) });
+  };
+
+  const handleMint = async () => {
     setLoading(true);
     setResult(null);
-    let step = "init";
     try {
-      step = "getProvider";
-      const provider = getProvider();
-
-      step = "wallet.getUtxosMesh";
-      const utxos = await wallet.getUtxosMesh();
-      console.log("[mint] utxos:", utxos.length);
-
-      step = "wallet.getChangeAddressBech32";
-      const changeAddress = await wallet.getChangeAddressBech32();
-      console.log("[mint] changeAddress:", changeAddress);
-
-      step = "wallet.getCollateral";
-      const collateral: UTxO[] = await getCollateralUtxo(wallet, utxos);
-      console.log("[mint] collateral:", collateral.length);
-
-      step = "resolvePaymentKeyHash(changeAddress)";
-      const ownerPkh = resolvePaymentKeyHash(changeAddress);
-      console.log("[mint] ownerPkh:", ownerPkh);
-
-      const harvestTimestamp = Math.floor(Date.now() / 1000);
-      const datum = buildInitialDatum({
-        farmId,
-        lotId,
-        variety,
-        processing,
-        harvestTimestamp,
-        ownerPubKeyHash: ownerPkh,
+      const res = await fetch(`${BACKEND_URL}/blockchain/mint-tx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          farmId, lotId, variety, processing,
+          userAddress: await wallet.getChangeAddress(),
+        }),
       });
-
-      const refTokenName = referenceTokenName(lotId);
-      const usrTokenName = userTokenName(lotId);
-      console.log("[mint] refTokenName:", refTokenName);
-      console.log("[mint] usrTokenName:", usrTokenName);
-      console.log("[mint] scriptAddress:", passportScriptAddress);
-
-      step = "txBuilder.complete";
-      const txBuilder = new MeshTxBuilder({ fetcher: provider, verbose: true });
-
-      const unsignedTx = await txBuilder
-        .mintPlutusScriptV3()
-        .mint("1", passportPolicyId, refTokenName)
-        .mintingScript(scriptCbor)
-        .mintRedeemerValue(mintPassportRedeemer)
-        .mintPlutusScriptV3()
-        .mint("1", passportPolicyId, usrTokenName)
-        .mintingScript(scriptCbor)
-        .mintRedeemerValue(mintPassportRedeemer)
-        .txOut(passportScriptAddress, [
-          { unit: passportPolicyId + refTokenName, quantity: "1" },
-        ])
-        .txOutInlineDatumValue(datum)
-        .txInCollateral(
-          collateral[0].input.txHash,
-          collateral[0].input.outputIndex,
-          collateral[0].output.amount,
-          collateral[0].output.address,
-        )
-        .changeAddress(changeAddress)
-        .selectUtxosFrom(utxos)
-        .complete();
-      console.log("[mint] unsignedTx length:", unsignedTx.length);
-
-      step = "wallet.signTxReturnFullTx";
-      const signedTx = await wallet.signTxReturnFullTx(unsignedTx, true);
-      console.log("[mint] signedTx length:", signedTx.length);
-
-      step = "wallet.submitTx";
-      const txHash = await wallet.submitTx(signedTx);
+      if (!res.ok) throw new Error(await res.text());
+      const { unsignedTx } = await res.json();
+      const signedTx = await wallet.signTx(unsignedTx, true);
+      const submitRes = await fetch(`${BACKEND_URL}/blockchain/submit-tx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signedTx }),
+      });
+      if (!submitRes.ok) throw new Error(await submitRes.text());
+      const { txHash } = await submitRes.json();
       setResult({ hash: txHash });
-    } catch (e: any) {
-      console.error(`[mint] failed at step "${step}":`, e);
-      setResult({ error: `[${step}] ${e?.message || String(e)}` });
-    } finally {
-      setLoading(false);
-    }
-  }
+    } catch (err: any) { handleError(err); }
+    finally { setLoading(false); }
+  };
 
-  async function handleUpdateEvents() {
+  const handleUpdateEvents = async () => {
     setLoading(true);
     setResult(null);
     try {
-      const provider = getProvider();
-      const utxos = await wallet.getUtxosMesh();
-      const changeAddress = await wallet.getChangeAddressBech32();
-      const collateral: UTxO[] = await getCollateralUtxo(wallet, utxos);
-      const ownerPkh = resolvePaymentKeyHash(changeAddress);
-
-      // Find the reference token UTxO at script address
-      const refTokenName = referenceTokenName(lotId);
-      const refAssetUnit = passportPolicyId + refTokenName;
-      const scriptUtxos = await provider.fetchAddressUTxOs(passportScriptAddress);
-      const refUtxo = scriptUtxos.find((u: UTxO) =>
-        u.output.amount.some((a: any) => a.unit === refAssetUnit),
-      );
-      if (!refUtxo) throw new Error("Reference token UTxO not found at script address");
-
-      // Parse old datum and build new datum with updated merkle root
-      const oldDatumFields = (refUtxo.output.plutusData as any)?.fields;
-      if (!oldDatumFields) throw new Error("No inline datum found on reference UTxO");
-
-      // Clone and update only the allowed fields
-      const newFields = [...oldDatumFields];
-      if (merkleRoot) newFields[5] = merkleRoot;
-      if (photosHash) newFields[6] = photosHash;
-      const newDatum = { alternative: 0, fields: newFields };
-
-      const txBuilder = new MeshTxBuilder({ fetcher: provider, verbose: true });
-
-      const unsignedTx = await txBuilder
-        .spendingPlutusScriptV3()
-        .txIn(refUtxo.input.txHash, refUtxo.input.outputIndex)
-        .txInInlineDatumPresent()
-        .txInRedeemerValue(updateEventsRedeemer)
-        .txInScript(scriptCbor)
-        // Continuing output with updated datum
-        .txOut(passportScriptAddress, refUtxo.output.amount)
-        .txOutInlineDatumValue(newDatum)
-        .requiredSignerHash(ownerPkh)
-        .txInCollateral(
-          collateral[0].input.txHash,
-          collateral[0].input.outputIndex,
-          collateral[0].output.amount,
-          collateral[0].output.address,
-        )
-        .changeAddress(changeAddress)
-        .selectUtxosFrom(utxos)
-        .complete();
-
-      const signedTx = await wallet.signTxReturnFullTx(unsignedTx, true);
-      const txHash = await wallet.submitTx(signedTx);
+      const res = await fetch(`${BACKEND_URL}/blockchain/update-events-tx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lotId, merkleRoot, photosHash,
+          userAddress: await wallet.getChangeAddress(),
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const { unsignedTx } = await res.json();
+      const signedTx = await wallet.signTx(unsignedTx, true);
+      const submitRes = await fetch(`${BACKEND_URL}/blockchain/submit-tx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signedTx }),
+      });
+      if (!submitRes.ok) throw new Error(await submitRes.text());
+      const { txHash } = await submitRes.json();
       setResult({ hash: txHash });
-    } catch (e: any) {
-      setResult({ error: e.message || String(e) });
-    } finally {
-      setLoading(false);
-    }
-  }
+    } catch (err: any) { handleError(err); }
+    finally { setLoading(false); }
+  };
 
-  // Update Lab now goes through the backend oracle (server-signed), which
-  // correctly decodes the CIP-68 datum CBOR. The browser wallet path can't
-  // reconstruct the datum because Mesh returns plutusData as a CBOR hex string.
-  async function handleUpdateLab() {
+  const handleUpdateLab = async () => {
     setLoading(true);
     setResult(null);
     try {
       const res = await fetch(`${BACKEND_URL}/blockchain/submit-lab`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lotId, scaScore: parseInt(scaScore), labCertHash }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const { txHash } = await res.json();
+      setResult({ hash: txHash });
+    } catch (err: any) { handleError(err); }
+    finally { setLoading(false); }
+  };
+
+  const handleUpdateSustain = async () => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/blockchain/submit-sustainability`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          lot_id: lotId,
-          sca_score: parseInt(scaScore) || 0,
-          lab_cert_hash: labCertHash || undefined,
+          lotId,
+          co2e: parseFloat(co2e), waterL: parseFloat(waterL),
+          organicPct: parseFloat(organicPct), somPct: parseFloat(somPct),
+          shadePct: parseFloat(shadePct), eudrHash,
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || res.statusText);
-      setResult({ hash: json.tx_hash });
-    } catch (e: any) {
-      setResult({ error: e.message || String(e) });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const tabs = [
-    { key: "mint" as const, label: "Mint Passport" },
-    { key: "update" as const, label: "Update Events" },
-    { key: "lab" as const, label: "Update Lab" },
-  ];
+      if (!res.ok) throw new Error(await res.text());
+      const { txHash } = await res.json();
+      setResult({ hash: txHash });
+    } catch (err: any) { handleError(err); }
+    finally { setLoading(false); }
+  };
 
   return (
-    <main className="flex min-h-screen flex-col items-center p-8 pt-16">
-      <h1 className="text-3xl font-bold mb-1">VerifiedVietCoffee</h1>
-      <p className="text-gray-500 mb-6 text-sm">
-        Smart Contract Test UI — Preview
-      </p>
-
-      <div className="mb-6">
-        <CardanoWallet />
+    <div className="min-h-screen bg-[#111c10] text-[#e8e0d4] font-sans selection:bg-[#3A6B35]/30 overflow-hidden flex flex-col md:flex-row">
+      {/* Background orbs matching brand palette */}
+      <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-32 -right-32 w-[500px] h-[500px] bg-[#2D5A27]/8 rounded-full blur-[150px]" />
+        <div className="absolute bottom-0 left-1/4 w-[400px] h-[400px] bg-[#6B3A2A]/6 rounded-full blur-[130px]" />
+        <div className="absolute top-1/2 right-1/3 w-72 h-72 bg-[#4A7C3F]/6 rounded-full blur-[120px]" />
       </div>
 
-      {connected && (
-        <div className="w-full max-w-lg space-y-4">
-          {/* Contract info */}
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="p-2 bg-gray-50 rounded">
-              <span className="font-semibold">Script Address</span>
-              <p className="font-mono text-gray-500 truncate" title={passportScriptAddress}>
-                {passportScriptAddress}
-              </p>
-            </div>
-            <div className="p-2 bg-gray-50 rounded">
-              <span className="font-semibold">Policy ID</span>
-              <p className="font-mono text-gray-500 truncate" title={passportPolicyId}>
-                {passportPolicyId}
-              </p>
-            </div>
-          </div>
+      <Sidebar activeTab={activeTab} onSelectTab={(t) => { setActiveTab(t); setResult(null); }} />
 
-          {/* Tabs */}
-          <div className="flex border-b">
-            {tabs.map((t) => (
-              <button
-                key={t.key}
-                onClick={() => { setTab(t.key); setResult(null); }}
-                className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
-                  tab === t.key
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Mint Passport */}
-          {tab === "mint" && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="text-xs font-medium text-gray-700">Farm ID</span>
-                  <input
-                    value={farmId}
-                    onChange={(e) => setFarmId(e.target.value)}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-xs font-medium text-gray-700">Lot ID</span>
-                  <input
-                    value={lotId}
-                    onChange={(e) => setLotId(e.target.value)}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-xs font-medium text-gray-700">Variety</span>
-                  <select
-                    value={variety}
-                    onChange={(e) => setVariety(e.target.value)}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                  >
-                    <option>Robusta</option>
-                    <option>Arabica</option>
-                    <option>Catimor</option>
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-xs font-medium text-gray-700">Processing</span>
-                  <select
-                    value={processing}
-                    onChange={(e) => setProcessing(e.target.value)}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                  >
-                    <option>Honey</option>
-                    <option>Washed</option>
-                    <option>Natural</option>
-                  </select>
-                </label>
-              </div>
-              <button
-                onClick={handleMintPassport}
-                disabled={loading || !farmId || !lotId}
-                className="w-full py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition text-sm"
-              >
-                {loading ? "Minting..." : "Mint Coffee Passport"}
-              </button>
-              <p className="text-xs text-gray-400">
-                Mints a CIP-68 NFT pair: reference token (with datum) at script address + user token to your wallet.
-              </p>
+      <div className="flex-1 flex flex-col z-10 h-screen overflow-y-auto">
+        <Header scriptAddress={scriptAddress} policyId={policyId} connected={connected} />
+        
+        <main className="flex-1 p-6 md:p-12">
+          {!connected ? (
+            <div className="flex flex-col items-center justify-center h-full max-w-sm mx-auto text-center space-y-6">
+              <Image src="/logo.png" alt="VerifiedVietCoffee" width={120} height={120} className="opacity-40" />
+              <h2 className="text-2xl font-bold text-[#e8e0d4]">Kết nối Ví Cardano</h2>
+              <p className="text-[#8aad82]/40 text-sm leading-relaxed">Vui lòng kết nối ví của bạn (Lace, Nami, Eternl…) bằng nút ở thanh bên trái để truy cập hệ thống quản trị nông trại.</p>
             </div>
-          )}
-
-          {/* Update Events */}
-          {tab === "update" && (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="text-xs font-medium text-gray-700">Lot ID (to update)</span>
-                <input
-                  value={lotId}
-                  onChange={(e) => setLotId(e.target.value)}
-                  className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
+          ) : (
+            <div className="max-w-4xl">
+              {activeTab === "mint" && (
+                <MintForm 
+                  farmId={farmId} setFarmId={setFarmId} 
+                  lotId={lotId} setLotId={setLotId} 
+                  variety={variety} setVariety={setVariety} 
+                  processing={processing} setProcessing={setProcessing} 
+                  onSubmit={handleMint} loading={loading} 
                 />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-gray-700">Daily Events Merkle Root</span>
-                <input
-                  value={merkleRoot}
-                  onChange={(e) => setMerkleRoot(e.target.value)}
-                  placeholder="sha256:9c4a1f..."
-                  className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm font-mono"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-gray-700">Photos Hash</span>
-                <input
-                  value={photosHash}
-                  onChange={(e) => setPhotosHash(e.target.value)}
-                  placeholder="sha256:21be90..."
-                  className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm font-mono"
-                />
-              </label>
-              <button
-                onClick={handleUpdateEvents}
-                disabled={loading || !lotId || (!merkleRoot && !photosHash)}
-                className="w-full py-2 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50 transition text-sm"
-              >
-                {loading ? "Updating..." : "Update Events (Tier 1)"}
-              </button>
-              <p className="text-xs text-gray-400">
-                Spends the reference token UTxO and recreates it with updated merkle root / photos hash.
-              </p>
-            </div>
-          )}
-
-          {/* Update Lab */}
-          {tab === "lab" && (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="text-xs font-medium text-gray-700">Lot ID (to update)</span>
-                <input
-                  value={lotId}
-                  onChange={(e) => setLotId(e.target.value)}
-                  className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-gray-700">SCA Cupping Score</span>
-                <input
-                  type="number"
-                  value={scaScore}
-                  onChange={(e) => setScaScore(e.target.value)}
-                  min="0"
-                  max="100"
-                  className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-gray-700">Lab Certificate Hash</span>
-                <input
-                  value={labCertHash}
-                  onChange={(e) => setLabCertHash(e.target.value)}
-                  placeholder="sha256:..."
-                  className="mt-1 block w-full rounded border border-gray-300 px-3 py-1.5 text-sm font-mono"
-                />
-              </label>
-              <button
-                onClick={handleUpdateLab}
-                disabled={loading || !lotId}
-                className="w-full py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 transition text-sm"
-              >
-                {loading ? "Updating..." : "Update Lab Results"}
-              </button>
-              <p className="text-xs text-gray-400">
-                Updates SCA score and lab certification hash on the passport datum.
-              </p>
-            </div>
-          )}
-
-          {/* Result */}
-          {result && (
-            <div
-              className={`p-3 rounded-lg text-sm ${
-                result.error
-                  ? "bg-red-50 border border-red-200 text-red-700"
-                  : "bg-green-50 border border-green-200 text-green-700"
-              }`}
-            >
-              {result.error ? (
-                <div>
-                  <p className="font-semibold">Error</p>
-                  <p className="break-all text-xs mt-1">{result.error}</p>
-                </div>
-              ) : (
-                <div>
-                  <p className="font-semibold">Transaction Submitted</p>
-                  <a
-                    href={`https://preview.cardanoscan.io/transaction/${result.hash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-green-600 hover:underline text-xs break-all"
-                  >
-                    {result.hash}
-                  </a>
-                  {tab === "mint" && lotId && <ConsumerLink lotId={lotId} />}
-                </div>
               )}
+              {activeTab === "update" && (
+                <UpdateEventsForm 
+                  lotId={lotId} setLotId={setLotId} 
+                  merkleRoot={merkleRoot} setMerkleRoot={setMerkleRoot} 
+                  photosHash={photosHash} setPhotosHash={setPhotosHash} 
+                  onSubmit={handleUpdateEvents} loading={loading} 
+                />
+              )}
+              {activeTab === "lab" && (
+                <LabForm 
+                  lotId={lotId} setLotId={setLotId} 
+                  scaScore={scaScore} setScaScore={setScaScore} 
+                  labCertHash={labCertHash} setLabCertHash={setLabCertHash} 
+                  onSubmit={handleUpdateLab} loading={loading} 
+                />
+              )}
+              {activeTab === "sustain" && (
+                <SustainForm 
+                  lotId={lotId} setLotId={setLotId} 
+                  co2e={co2e} setCo2e={setCo2e} 
+                  waterL={waterL} setWaterL={setWaterL} 
+                  organicPct={organicPct} setOrganicPct={setOrganicPct} 
+                  somPct={somPct} setSomPct={setSomPct} 
+                  shadePct={shadePct} setShadePct={setShadePct} 
+                  eudrHash={eudrHash} setEudrHash={setEudrHash} 
+                  onSubmit={handleUpdateSustain} loading={loading} 
+                />
+              )}
+
+              <TransactionResult result={result} tab={activeTab} lotId={lotId} CARDANOSCAN={CARDANOSCAN} />
             </div>
           )}
-        </div>
-      )}
-
-      {!connected && (
-        <p className="text-gray-400 text-sm mt-4">
-          Connect your wallet to test the smart contract
-        </p>
-      )}
-    </main>
-  );
-}
-
-function ConsumerLink({ lotId }: { lotId: string }) {
-  const url =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/lot/${encodeURIComponent(lotId)}`
-      : `/lot/${encodeURIComponent(lotId)}`;
-  return (
-    <div className="mt-3 pt-3 border-t border-green-200 flex items-center gap-3">
-      <div className="bg-white p-1.5 rounded border border-gray-200">
-        <QRCodeSVG value={url} size={88} />
-      </div>
-      <div className="text-xs text-gray-700 space-y-1">
-        <p className="font-semibold text-gray-900">Consumer passport</p>
-        <a
-          href={`/lot/${encodeURIComponent(lotId)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-600 hover:underline break-all"
-        >
-          /lot/{lotId}
-        </a>
-        <p className="text-gray-400">Scan with phone or open in new tab.</p>
+        </main>
       </div>
     </div>
   );

@@ -183,9 +183,10 @@ export default function IoTMonitoring({ telemetry, setTelemetry, eventLogs, setE
           </div>
         </div>
 
-        {/* Plant Photo (Time-lapse View) */}
+        {/* Plant Photo (Time-lapse View) & GPS Geofence */}
         <div className="lg:col-span-12 glass-panel rounded-xl overflow-hidden grid grid-cols-1 md:grid-cols-12 shadow-sm">
-          <div className="md:col-span-6 h-64 md:h-full min-h-[240px] relative group overflow-hidden">
+          {/* Live Camera */}
+          <div className="md:col-span-4 h-64 md:h-full min-h-[240px] relative group overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               alt="Live Camera view of the coffee crop block"
@@ -206,30 +207,102 @@ export default function IoTMonitoring({ telemetry, setTelemetry, eventLogs, setE
             </div>
           </div>
 
-          <div className="md:col-span-6 p-8 flex flex-col justify-center space-y-5">
+          {/* Phenology Monitor */}
+          <div className="md:col-span-4 p-6 flex flex-col justify-center space-y-4 border-t md:border-t-0 md:border-l border-[#A67B5B]/15">
             <div>
-              <h3 className="font-serif text-xl font-bold text-[#012d1d] mb-2">Phenology Monitor</h3>
-              <p className="text-sm text-[#414844]/90 leading-relaxed">
-                Automated daily camera captures analyze foliar surface health, disease indexes, and pest detection metrics in real time. Last verified by agricultural nodes: <span className="font-semibold text-[#2D6A4F]">14 mins ago</span>.
+              <h3 className="font-serif text-lg font-bold text-[#012d1d] mb-2">Phenology Monitor</h3>
+              <p className="text-xs text-[#414844]/90 leading-relaxed">
+                Automated daily camera captures analyze foliar surface health, disease indexes, and pest detection metrics in real time. Last verified: <span className="font-semibold text-[#2D6A4F]">14 mins ago</span>.
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-[#f3f4f1] rounded-lg border border-[#A67B5B]/10">
-                <span className="text-[10px] tracking-wider uppercase font-bold text-[#717973] block mb-1">Phenological Stage</span>
-                <span className="text-sm font-bold text-[#2D6A4F]">Flowering Season</span>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 bg-[#f3f4f1] rounded-lg border border-[#A67B5B]/10">
+                <span className="text-[9px] tracking-wider uppercase font-bold text-[#717973] block mb-1">Stage</span>
+                <span className="text-xs font-bold text-[#2D6A4F]">Flowering</span>
               </div>
-              <div className="p-4 bg-[#f3f4f1] rounded-lg border border-[#A67B5B]/10">
-                <span className="text-[10px] tracking-wider uppercase font-bold text-[#717973] block mb-1">Foliar Health Index</span>
-                <span className="text-sm font-bold text-[#008000]">98.2 (Optimal)</span>
+              <div className="p-3 bg-[#f3f4f1] rounded-lg border border-[#A67B5B]/10">
+                <span className="text-[9px] tracking-wider uppercase font-bold text-[#717973] block mb-1">Foliar Index</span>
+                <span className="text-xs font-bold text-[#008000]">98.2 (Optimal)</span>
               </div>
             </div>
             <button
               onClick={() => setIsHistoryModalOpen(true)}
-              className="w-full flex items-center justify-center gap-2 border-2 border-[#A67B5B]/20 py-3 rounded-lg text-xs font-bold text-[#414844] hover:bg-[#e8e8e5] transition-all cursor-pointer outline-none"
+              className="w-full flex items-center justify-center gap-2 border border-[#A67B5B]/20 py-2.5 rounded-lg text-xs font-bold text-[#414844] hover:bg-[#e8e8e5] transition-all cursor-pointer outline-none"
             >
-              <History size={16} />
-              <span>Explore Time-lapse History Logs</span>
+              <History size={14} />
+              <span>Explore History Logs</span>
             </button>
+          </div>
+
+          {/* GPS Bounding Polygon Map */}
+          <div className="md:col-span-4 p-6 bg-[#f9faf6] border-t md:border-t-0 md:border-l border-[#A67B5B]/15 flex flex-col justify-between space-y-4">
+            <div>
+              <div className="flex justify-between items-start mb-2">
+                <div>
+                  <h3 className="font-serif text-sm font-bold text-[#012d1d]">GPS Geofence & Boundary</h3>
+                  <p className="text-[9px] tracking-wider uppercase font-bold text-[#717973]">Sentinel-2 Verified Area</p>
+                </div>
+                <span className="text-[9px] bg-[#2D6A4F]/10 text-[#2D6A4F] px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                  4.85 Ha
+                </span>
+              </div>
+
+              {/* Satellite Map with correct geofence area outlined */}
+              <div className="h-32 bg-stone-900 rounded-xl overflow-hidden relative border border-[#A67B5B]/20 flex items-center justify-center">
+                {/* Satellite Land Imagery */}
+                <img
+                  src="/satellite_map.png"
+                  alt="Satellite Land Map"
+                  className="absolute inset-0 w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity duration-300"
+                />
+                
+                <svg className="w-full h-full p-2 absolute inset-0 z-10" viewBox="0 0 100 100">
+                  {/* Grid Lines overlay */}
+                  <g stroke="#ffffff" strokeWidth="0.1" opacity="0.08">
+                    <line x1="20" y1="0" x2="20" y2="100" />
+                    <line x1="40" y1="0" x2="40" y2="100" />
+                    <line x1="60" y1="0" x2="60" y2="100" />
+                    <line x1="80" y1="0" x2="80" y2="100" />
+                    <line x1="0" y1="20" x2="100" y2="20" />
+                    <line x1="0" y1="40" x2="100" y2="40" />
+                    <line x1="0" y1="60" x2="100" y2="60" />
+                    <line x1="0" y1="80" x2="100" y2="80" />
+                  </g>
+                  
+                  {/* Compass / Legend */}
+                  <text x="88" y="94" fill="#ffffff" fontSize="6" fontWeight="bold" opacity="0.9" fontFamily="sans-serif">N 🧭</text>
+                  <text x="5" y="94" fill="#ffffff" fontSize="5" opacity="0.8" fontFamily="monospace">Binh Dong Farm</text>
+                </svg>
+                
+                {/* Active Tag */}
+                <div className="absolute top-2 left-2 z-20 bg-[#012d1d]/90 backdrop-blur-sm px-2 py-0.5 rounded border border-[#a5d0b9]/30 text-white text-[8px] font-mono tracking-wider uppercase">
+                  Gps Locked
+                </div>
+              </div>
+            </div>
+
+            {/* Coordinates / Hash */}
+            <div className="space-y-2">
+              <div className="bg-[#f0f1ed] p-2 rounded-lg border border-[#A67B5B]/10 space-y-1">
+                <div className="flex justify-between items-center text-[9px] text-[#717973] uppercase font-bold">
+                  <span>Bounds Polygon</span>
+                  <span className="font-mono text-[8px] text-[#2D6A4F]">5 vertices</span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-2 text-[9px] font-mono text-[#012d1d] max-h-[44px] overflow-y-auto">
+                  <span>P1: 11.9400° N, 108.4400° E</span>
+                  <span>P2: 11.9420° N, 108.4405° E</span>
+                  <span>P3: 11.9425° N, 108.4430° E</span>
+                  <span>P4: 11.9395° N, 108.4440° E</span>
+                  <span>P5: 11.9380° N, 108.4415° E</span>
+                </div>
+              </div>
+              <div className="flex justify-between items-center text-[8px] text-[#717973] font-mono pt-1">
+                <span>POLYGON HASH:</span>
+                <span className="text-[#012d1d] font-bold select-all truncate max-w-[70%]" title="sha256:d47e082f3c4b5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b">
+                  d47e082f3c4b...e8f9
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </section>

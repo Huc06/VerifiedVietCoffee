@@ -229,11 +229,10 @@ export default function ManagerDashboard({ lots, setView, onSelectLot, telemetry
             </div>
             <div className="md:col-span-5 relative h-56 w-full rounded-xl overflow-hidden border border-white/10 shadow-md">
               <div className="absolute inset-0 bg-gradient-to-t from-[#012d1d] via-transparent to-transparent z-10 pointer-events-none" />
-              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 alt="EUDR Farm Satellite Map"
                 className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-700 hover:scale-105"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuDbeJOkwKb-mFHfAbMth49tFQ2RLQBguNMGQz7Kc2HEpMCRFQY0KHfu200VGP_RxfgkI4Ryj2TavjbWgKROttoTHe5s3nG2xgWIgbgo41IiqMlQz6omGAt6mQCrygA-WqCU7MhBxsw7E8eWMsp8sccnEvlICHGZ_pFrSWHiWuV_g0LiLaGMIkkkDVOHcNnEAZiXiTfor4ahH8G3qrHHvwzvR96oGRHv5xuQjxaqAC48WlI6TsLfoWkYkqChSOoOZv_r1WSYwRWsYhA"
+                src="/satellite_map.png"
               />
               <div className="absolute bottom-3 right-3 z-20 backdrop-blur-md bg-white/70 px-3 py-1.5 rounded-lg border border-[#2D6A4F]/20 flex items-center gap-1.5 shadow-sm">
                 <Lock size={12} className="text-[#2D6A4F]" />

@@ -1,26 +1,69 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap');
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --background: #F5F5F3;
+  --foreground: #1a1c1a;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Slow continuous spin (used by ambient sun / sync indicators) */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 6s linear infinite;
+}
+
+/* Glassmorphism panel styles */
+.glass-panel {
+  background: rgba(248, 249, 250, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(166, 123, 91, 0.15);
+}
+
+.glass-card {
+  background: rgba(248, 249, 250, 0.8);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(166, 123, 91, 0.15);
+}
+
+/* Custom scrollbars */
+.scrolling-data::-webkit-scrollbar {
+  height: 4px;
+}
+.scrolling-data::-webkit-scrollbar-thumb {
+  background: rgba(166, 123, 91, 0.25);
+  border-radius: 2px;
+}
+
+.tech-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.tech-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tech-scroll::-webkit-scrollbar-thumb {
+  background: rgba(166, 123, 91, 0.25);
+  border-radius: 10px;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }

@@ -1,11 +1,14 @@
 import { FastifyInstance } from "fastify";
+import type { UTxO } from "@meshsdk/core";
 import { buildDailyMerkleTree, verifyProof } from "../lib/merkle.js";
 import { store } from "../lib/store.js";
 import {
+  buildMintTx,
   getOracleAddress,
   getOraclePkh,
   passportScriptAddress,
   setupOracleCollateral,
+  submitSignedTx,
   submitUpdateEvents,
   submitUpdateLab,
   submitUpdateSustainability,
@@ -270,11 +273,67 @@ export async function blockchainRoutes(app: FastifyInstance) {
     return { valid, leaf, root };
   });
 
-  // POST /blockchain/mint-passport — placeholder (actual minting via FE wallet)
-  app.post("/mint-passport", async () => {
-    return {
-      message:
-        "Use frontend wallet UI to mint. This endpoint is for server-side automation (Phase 2).",
+  // POST /blockchain/mint-tx — Build an UNSIGNED CIP-68 mint tx for the FE wallet.
+  // Body: { farmId, lotId, variety, processing, userAddress }
+  // Returns: { unsignedTx } — the browser wallet signs it, then calls /submit-tx.
+  app.post<{
+    Body: {
+      farmId: string;
+      lotId: string;
+      variety?: string;
+      processing?: string;
+      changeAddress: string;
+      utxos: UTxO[];
+      collateral?: UTxO[];
     };
+  }>("/mint-tx", async (request, reply) => {
+    const { farmId, lotId, variety, processing, changeAddress, utxos, collateral } =
+      request.body;
+    if (!farmId || !lotId || !changeAddress) {
+      return reply
+        .status(400)
+        .send({ error: "farmId, lotId and changeAddress are required" });
+    }
+    if (!Array.isArray(utxos) || utxos.length === 0) {
+      return reply.status(400).send({
+        error:
+          "No wallet UTxOs provided. Connect a funded Preview wallet and retry.",
+      });
+    }
+    try {
+      const { unsignedTx } = await buildMintTx({
+        farmId,
+        lotId,
+        variety: variety || "Robusta",
+        processing: processing || "Honey",
+        changeAddress,
+        utxos,
+        collateral,
+      });
+      return { unsignedTx };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      request.log.error({ err }, "mint-tx failed");
+      return reply.status(500).send({ error: msg });
+    }
   });
+
+  // POST /blockchain/submit-tx — Submit a wallet-signed tx. Body: { signedTx }
+  app.post<{ Body: { signedTx: string } }>(
+    "/submit-tx",
+    async (request, reply) => {
+      const { signedTx } = request.body;
+      if (!signedTx) {
+        return reply.status(400).send({ error: "signedTx required" });
+      }
+      try {
+        const txHash = await submitSignedTx(signedTx);
+        return { txHash };
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        request.log.error({ err }, "submit-tx failed");
+        return reply.status(500).send({ error: msg });
+      }
+    },
+  );
 }

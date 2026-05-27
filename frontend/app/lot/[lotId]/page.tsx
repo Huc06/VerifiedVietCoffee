@@ -115,7 +115,9 @@ export default function LotPage({
 
   useEffect(() => {
     let alive = true;
+    let attempts = 0;
     setLoading(true);
+    setError(null);
 
     if (isMock) {
       setTimeout(() => {
@@ -127,24 +129,45 @@ export default function LotPage({
       return;
     }
 
-    fetch(`${BACKEND_URL}/verify/lot/${encodeURIComponent(lotId)}`)
-      .then(async (r) => {
-        if (!r.ok) throw new Error((await r.json()).error ?? r.statusText);
-        return r.json();
-      })
-      .then((json: LotResponse) => {
-        if (alive) setData(json);
-      })
-      .catch((e) => {
-        console.warn("Fetch failed, falling back to mock data if preferred", e);
-        // Fallback to mock if fetch fails just for demo purposes (optional)
-        if (alive) {
-          setData(mockLotData as unknown as LotResponse);
-          // setError(e.message ?? String(e))
+    // Fetch the real on-chain passport. A freshly minted lot can take ~1 minute
+    // to be indexed, so we retry on 404 before surfacing an error. We never fall
+    // back to demo data here — that would misrepresent a real lot as another farm.
+    const load = async () => {
+      try {
+        const r = await fetch(`${BACKEND_URL}/verify/lot/${encodeURIComponent(lotId)}`);
+        if (r.status === 404) {
+          if (attempts < 5 && alive) {
+            attempts += 1;
+            setTimeout(load, 6000);
+            return;
+          }
+          throw new Error(
+            "This passport isn't on-chain yet. If you just minted it, the network needs ~1 minute to index — wait a moment and retry.",
+          );
         }
-      })
-      .finally(() => alive && setLoading(false));
-      
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(body.error ?? r.statusText);
+        }
+        const json: LotResponse = await r.json();
+        if (alive) {
+          setData(json);
+          setLoading(false);
+        }
+      } catch (e: any) {
+        if (alive) {
+          const msg = e?.message ?? String(e);
+          setError(
+            /fetch|network|load failed/i.test(msg)
+              ? "Couldn't reach the verification service. Make sure the backend is running (localhost:4000), then retry."
+              : msg,
+          );
+          setLoading(false);
+        }
+      }
+    };
+    load();
+
     return () => {
       alive = false;
     };
@@ -167,15 +190,23 @@ export default function LotPage({
   if (error || !data) {
     return (
       <main className="min-h-screen bg-stone-900 text-stone-100 flex flex-col items-center justify-center gap-3 p-8">
-        <AlertTriangle className="w-12 h-12 text-red-500 mb-2" />
-        <h1 className="text-2xl font-bold">Lot not found</h1>
-        <p className="text-sm text-red-400 break-all max-w-lg text-center">
+        <Clock className="w-12 h-12 text-amber-500 mb-2" />
+        <h1 className="text-2xl font-bold">Passport not available yet</h1>
+        <p className="text-sm text-stone-400 break-all max-w-lg text-center">
           {error ?? "Unknown error"}
         </p>
-        <p className="text-xs text-stone-500 font-mono mt-4">ID: {lotId}</p>
-        <a href={`?mock=true`} className="mt-6 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-full text-sm transition backdrop-blur-md">
-          View Demo Data
-        </a>
+        <p className="text-xs text-stone-500 font-mono mt-4">Lot ID: {lotId}</p>
+        <div className="flex items-center gap-3 mt-6">
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-amber-500/90 hover:bg-amber-500 text-stone-900 font-semibold rounded-full text-sm transition"
+          >
+            Retry
+          </button>
+          <a href={`?mock=true`} className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-full text-sm transition backdrop-blur-md">
+            View Demo Data
+          </a>
+        </div>
       </main>
     );
   }
@@ -186,14 +217,17 @@ export default function LotPage({
 
   return (
     <main className="min-h-screen bg-stone-50 text-stone-900 relative selection:bg-amber-200">
-      {/* Background Hero Image */}
-      <div className="absolute top-0 left-0 w-full h-[40vh] z-0 overflow-hidden">
-        <img 
-          src="https://images.unsplash.com/photo-1550488135-7f2547b85e05?auto=format&fit=crop&q=80&w=2000" 
-          alt="Coffee Farm" 
-          className="w-full h-full object-cover opacity-90 brightness-75"
+      {/* Background Hero — on-brand gradient (no external image dependency) */}
+      <div className="absolute top-0 left-0 w-full h-[40vh] z-0 overflow-hidden bg-gradient-to-br from-[#012d1d] via-[#2D6A4F] to-[#A67B5B]">
+        <div
+          className="absolute inset-0 opacity-10"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle, rgba(255,255,255,0.5) 1px, transparent 1px)",
+            backgroundSize: "16px 16px",
+          }}
         />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-stone-50" />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-stone-50" />
       </div>
 
       <div className="relative z-10 flex flex-col items-center px-4 py-12 sm:py-20 w-full">

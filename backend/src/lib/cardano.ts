@@ -4,6 +4,10 @@ import {
   MeshTxBuilder,
   applyCborEncoding,
   resolvePaymentKeyHash,
+  stringToHex,
+  CIP68_100,
+  CIP68_222,
+  mConStr0,
 } from "@meshsdk/core";
 import type { UTxO, Data } from "@meshsdk/core";
 import { parseDatumCbor } from "@meshsdk/core-cst";
@@ -33,6 +37,21 @@ export const passportScriptAddress = buildScriptAddress(
   NETWORK_ID,
 );
 
+// CIP-30 wallets (e.g. Lace) often return the change address as hex-encoded
+// address bytes rather than bech32. Blockfrost + MeshTxBuilder expect bech32,
+// so normalize. A bech32 address already starts with "addr"; otherwise treat
+// the input as hex and re-encode (network id = low nibble of the header byte).
+export function toBech32Address(addr: string): string {
+  if (addr.startsWith("addr")) return addr;
+  const bytes = Buffer.from(addr, "hex");
+  if (bytes.length === 0) {
+    throw new Error(`Invalid user address: "${addr}"`);
+  }
+  const networkId = bytes[0] & 0x0f;
+  const prefix = networkId === 1 ? "addr" : "addr_test";
+  return bech32.encode(prefix, bech32.toWords(bytes), 1023);
+}
+
 // CIP-68 reference token name (label 100 = 000643b0)
 export function referenceTokenName(lotId: string): string {
   const hexLot = Buffer.from(lotId, "utf8").toString("hex");
@@ -46,6 +65,9 @@ export const updateSustainabilityRedeemer: Data = {
   fields: [],
 };
 export const updateLabRedeemer: Data = { alternative: 2, fields: [] };
+
+// Mint handler redeemer (MintAction::MintPassport = constructor 0)
+export const mintPassportRedeemer: Data = mConStr0([]);
 
 // ---- Lazy oracle singleton ----
 let _provider: BlockfrostProvider | null = null;
@@ -569,5 +591,174 @@ export async function setupOracleCollateral(): Promise<SubmitResult> {
   const signedTx = await wallet.signTx(unsignedTx, true);
   const txHash = await wallet.submitTx(signedTx);
   return { txHash, oraclePkh };
+}
+
+// ---- Mint a new CIP-68 coffee passport ----
+// Builds an UNSIGNED tx the user's browser wallet signs (it funds the mint and
+// provides collateral). The validator's MintPassport handler only requires that
+// exactly one reference (100) + one user (222) token are minted, qty 1 each — it
+// does not check signatures. The reference token + inline datum go to the script
+// address; the user (222) token goes to the user. The datum `owner` is the ORACLE
+// pkh so the backend can later anchor events / update lab + sustainability (the
+// spend handler requires the owner to sign those updates).
+export interface MintInput {
+  farmId: string;
+  lotId: string;
+  variety: string;
+  processing: string;
+  // The connected wallet enumerates its own funding UTxOs, change address and
+  // (optional) collateral. We can't rely on a single address from getChangeAddress
+  // — HD wallets often return an empty internal change address while funds live
+  // elsewhere — so the wallet hands us everything needed to build the tx.
+  changeAddress: string;
+  utxos: UTxO[];
+  collateral?: UTxO[];
+}
+
+function buildInitialDatum(p: {
+  farmId: string;
+  lotId: string;
+  variety: string;
+  processing: string;
+  harvestTimestamp: number;
+  ownerPkh: string;
+}): Data {
+  const emptySustainability: Data = {
+    alternative: 0,
+    fields: [
+      "", // forest_baseline_hash
+      "", // eudr_dds_hash
+      0, // deforestation_risk_score
+      "", // fertilizer_log_hash
+      0, // organic_input_ratio_pct
+      0, // synthetic_n_kg_per_ha
+      0, // co2e_per_kg_int10
+      "", // co2_calc_method
+      0, // water_l_per_kg
+      FALSE_DATA, // wastewater_treated: Bool
+      0, // som_pct_int10
+      "", // soil_test_lab_hash
+      0, // shade_canopy_pct
+      0, // bird_species_count
+      "", // biodiversity_audit_hash
+      [], // certifications: List
+    ],
+  };
+
+  return {
+    alternative: 0,
+    fields: [
+      p.farmId,
+      p.lotId,
+      p.variety,
+      p.processing,
+      p.harvestTimestamp,
+      "", // daily_events_merkle_root
+      "", // photos_hash
+      "", // gps_polygon_hash
+      0, // sca_score
+      "", // lab_cert_hash
+      emptySustainability,
+      1, // metadata_version
+      p.ownerPkh, // owner (oracle pkh)
+    ],
+  };
+}
+
+export async function buildMintTx(
+  input: MintInput,
+): Promise<{ unsignedTx: string }> {
+  const provider = getProvider();
+  const oraclePkh = await getOraclePkh();
+  const harvestTimestamp = Math.floor(Date.now() / 1000);
+
+  // Normalize the change address (Lace returns hex; MeshTxBuilder needs bech32).
+  const changeAddress = toBech32Address(input.changeAddress);
+
+  const assetName = stringToHex(input.lotId);
+  const refName = CIP68_100(assetName);
+  const userName = CIP68_222(assetName);
+  const refUnit = passportPolicyId + refName;
+  const userUnit = passportPolicyId + userName;
+
+  // Prevent duplicate passports for the same lot_id.
+  const existing = await findReferenceUtxo(input.lotId);
+  if (existing) {
+    throw new Error(
+      `A passport for lot "${input.lotId}" already exists on-chain. Use a unique Lot ID.`,
+    );
+  }
+
+  // Wallets vary in what getUtxos()/getCollateral() return (objects vs hex), so
+  // only trust entries with the expected { input, output: { amount[] } } shape.
+  const isValidUtxo = (u: unknown): u is UTxO =>
+    !!u &&
+    typeof u === "object" &&
+    "input" in u &&
+    "output" in u &&
+    Array.isArray((u as UTxO).output?.amount);
+
+  const userUtxos = (input.utxos ?? []).filter(isValidUtxo);
+  if (userUtxos.length === 0) {
+    throw new Error(
+      "Connected wallet returned no usable UTxOs. Make sure it's funded with Preview test ADA, then retry.",
+    );
+  }
+  // Use wallet-supplied collateral only if well-formed; otherwise derive a
+  // pure-ADA input ourselves (proven path — same as the oracle spend flow).
+  const providedCollateral = (input.collateral ?? []).filter(isValidUtxo);
+  const collateral =
+    providedCollateral[0] ?? findPureAda(userUtxos)[0] ?? userUtxos[0];
+
+  const datum = buildInitialDatum({
+    farmId: input.farmId,
+    lotId: input.lotId,
+    variety: input.variety,
+    processing: input.processing,
+    harvestTimestamp,
+    ownerPkh: oraclePkh,
+  });
+
+  const txBuilder = new MeshTxBuilder({
+    fetcher: provider,
+    submitter: provider,
+    verbose: false,
+  });
+
+  const unsignedTx = await txBuilder
+    .mintPlutusScriptV3()
+    .mint("1", passportPolicyId, refName)
+    .mintingScript(scriptCbor)
+    .mintRedeemerValue(mintPassportRedeemer)
+    .mintPlutusScriptV3()
+    .mint("1", passportPolicyId, userName)
+    .mintingScript(scriptCbor)
+    .mintRedeemerValue(mintPassportRedeemer)
+    .txOut(passportScriptAddress, [
+      { unit: refUnit, quantity: "1" },
+      { unit: "lovelace", quantity: "3000000" },
+    ])
+    .txOutInlineDatumValue(datum)
+    .txOut(changeAddress, [
+      { unit: userUnit, quantity: "1" },
+      { unit: "lovelace", quantity: "2000000" },
+    ])
+    .txInCollateral(
+      collateral.input.txHash,
+      collateral.input.outputIndex,
+      collateral.output.amount,
+      collateral.output.address,
+    )
+    .changeAddress(changeAddress)
+    .selectUtxosFrom(userUtxos)
+    .complete();
+
+  return { unsignedTx };
+}
+
+// Submit a wallet-signed tx (used by the mint flow's second leg).
+export async function submitSignedTx(signedTx: string): Promise<string> {
+  const provider = getProvider();
+  return provider.submitTx(signedTx);
 }
 

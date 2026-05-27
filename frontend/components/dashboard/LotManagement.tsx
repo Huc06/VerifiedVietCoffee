@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
   Share2, FileDown, Timer, Check, Anchor, Copy, ShieldCheck, Printer,
-  Droplet, Wind, Terminal, Activity, Info, RefreshCw, Plus
+  Droplet, Wind, Terminal, Activity, Info, RefreshCw, Plus, ExternalLink
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Lot } from '@/lib/types';
+
+const CARDANOSCAN = "https://preview.cardanoscan.io";
 
 interface Props {
   selectedLot: Lot;
@@ -22,6 +24,21 @@ export default function LotManagement({ selectedLot, lots, onSelectLot, walletCo
 
   const lotId = selectedLot.id;
   const isCip68Anchored = anchored[lotId] || false;
+
+  // Real on-chain lots carry a txHash → point links at real data; demo lots
+  // keep ?mock=true so the presentation still shows rich sample content.
+  const isOnchain = !!selectedLot.txHash;
+  const consumerPath = isOnchain
+    ? `/lot/${encodeURIComponent(lotId)}`
+    : `/lot/${encodeURIComponent(lotId)}?mock=true`;
+  const consumerUrl =
+    typeof window !== "undefined" ? `${window.location.origin}${consumerPath}` : consumerPath;
+  const toHex = (s: string) =>
+    Array.from(new TextEncoder().encode(s))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  // CIP-68 user (222) token unit → cardanoscan token page.
+  const tokenUrl = `${CARDANOSCAN}/token/${selectedLot.policyId}000de140${toHex(lotId)}`;
 
   const handleCopyJSON = () => {
     navigator.clipboard.writeText(cip68Schema);
@@ -97,9 +114,22 @@ export default function LotManagement({ selectedLot, lots, onSelectLot, walletCo
             <p className="font-serif text-[#79573f] text-lg font-medium">{selectedLot.variety}</p>
           </div>
           <div className="flex gap-2">
-            <button className="flex items-center gap-1.5 px-3.5 py-2 border border-[#A67B5B]/20 rounded-lg text-[#414844] hover:bg-[#e8e8e5] text-xs font-bold bg-white transition-all">
+            {selectedLot.txHash && (
+              <a
+                href={`${CARDANOSCAN}/transaction/${selectedLot.txHash}`}
+                target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-white text-xs font-bold bg-[#2D6A4F] hover:bg-[#40916c] transition-all shadow-sm"
+              >
+                <ExternalLink size={14} /><span>View on Cardano</span>
+              </a>
+            )}
+            <a
+              href={`/lot/${encodeURIComponent(selectedLot.id)}`}
+              target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3.5 py-2 border border-[#A67B5B]/20 rounded-lg text-[#414844] hover:bg-[#e8e8e5] text-xs font-bold bg-white transition-all"
+            >
               <Share2 size={14} /><span>Share Proof</span>
-            </button>
+            </a>
             <button className="flex items-center gap-1.5 px-3.5 py-2 border border-[#A67B5B]/20 rounded-lg text-[#414844] hover:bg-[#e8e8e5] text-xs font-bold bg-white transition-all">
               <FileDown size={14} /><span>Export COA</span>
             </button>
@@ -199,9 +229,7 @@ export default function LotManagement({ selectedLot, lots, onSelectLot, walletCo
             <h3 className="text-[10px] tracking-wider uppercase font-bold text-[#717973] mb-4">LOT PASSPORT QR CODE</h3>
             <div className="bg-white p-6 inline-block rounded-xl border border-[#eeeeeb] mb-4 shadow-inner">
               <QRCodeSVG
-                value={typeof window !== "undefined"
-                  ? `${window.location.origin}/lot/${encodeURIComponent(selectedLot.id)}?mock=true`
-                  : `/lot/${encodeURIComponent(selectedLot.id)}?mock=true`}
+                value={consumerUrl}
                 size={160}
                 fgColor="#012d1d"
                 className="mx-auto"
@@ -210,15 +238,26 @@ export default function LotManagement({ selectedLot, lots, onSelectLot, walletCo
             <p className="text-xs text-[#717973] leading-relaxed mb-6 px-3">
               Scan to view full immersive farm telemetry, soil properties, and Merkle records live on the public blockchain explorer portal.
             </p>
-            <button
-              onClick={handlePrintLabel}
-              disabled={printStatus}
-              className="w-full py-3 border-2 border-[#012d1d] text-[#012d1d] font-bold rounded-lg text-xs hover:bg-[#012d1d] hover:text-white flex items-center justify-center gap-1.5 transition-all outline-none cursor-pointer mb-3"
-            >
-              <Printer size={14} />
-              <span>{printStatus ? 'Generating tag Layout...' : 'Print Shipping Tag Label'}</span>
-            </button>
-            <a href={`/lot/${encodeURIComponent(selectedLot.id)}?mock=true`} target="_blank" rel="noopener noreferrer"
+            {isOnchain ? (
+              <a
+                href={tokenUrl}
+                target="_blank" rel="noopener noreferrer"
+                className="w-full py-3 border-2 border-[#012d1d] text-[#012d1d] font-bold rounded-lg text-xs hover:bg-[#012d1d] hover:text-white flex items-center justify-center gap-1.5 transition-all mb-3"
+              >
+                <ExternalLink size={14} />
+                <span>View Token on Cardano</span>
+              </a>
+            ) : (
+              <button
+                onClick={handlePrintLabel}
+                disabled={printStatus}
+                className="w-full py-3 border-2 border-[#012d1d] text-[#012d1d] font-bold rounded-lg text-xs hover:bg-[#012d1d] hover:text-white flex items-center justify-center gap-1.5 transition-all outline-none cursor-pointer mb-3"
+              >
+                <Printer size={14} />
+                <span>{printStatus ? 'Generating tag Layout...' : 'Print Shipping Tag Label'}</span>
+              </button>
+            )}
+            <a href={consumerPath} target="_blank" rel="noopener noreferrer"
               className="text-[10px] font-bold text-[#2D6A4F] hover:underline">
               View Consumer Passport →
             </a>

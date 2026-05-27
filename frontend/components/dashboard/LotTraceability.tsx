@@ -38,7 +38,7 @@ export default function LotTraceability({ selectedLot, lots, onSelectLot, wallet
       <section className="bg-white p-6 rounded-xl border border-[#A67B5B]/20 shadow-sm">
         <form onSubmit={handleSearchLookup} className="flex flex-col sm:flex-row gap-4 items-stretch">
           <div className="relative flex-1">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#717973]"><Search size={18} /></span>
+            <span className="absolute left-3.5 top-0 bottom-0 flex items-center text-[#717973] pointer-events-none"><Search size={18} /></span>
             <input type="text" value={searchId} onChange={(e) => { setSearchId(e.target.value); setSearchError(false); }}
               placeholder="Search Lot ID (e.g. VVC-2023-LAMDONG-084 or LD-2026-0427)..."
               className="w-full bg-[#F8F9FA] pl-11 pr-4 py-3 rounded-lg border border-[#A67B5B]/30 text-sm focus:outline-none focus:ring-1 focus:ring-[#2D6A4F] text-[#012d1d] font-mono uppercase" />

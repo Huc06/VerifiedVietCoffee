@@ -3,11 +3,46 @@ import { store } from "../lib/store.js";
 import { buildDailyMerkleTree } from "../lib/merkle.js";
 import {
   findReferenceUtxo,
+  getProvider,
   parsePassportDatum,
+  passportPolicyId,
   passportScriptAddress,
 } from "../lib/cardano.js";
 
 export async function verifyRoutes(app: FastifyInstance) {
+  // GET /verify/lots — List every on-chain passport (CIP-68 reference tokens at
+  // the script address), deduped by lot_id. Used by the operator UI to surface
+  // real minted lots alongside demo data. Declared before "/:farmId" so Fastify
+  // doesn't treat "lots" as a farmId.
+  app.get("/lots", async () => {
+    const provider = getProvider();
+    const utxos = await provider.fetchAddressUTxOs(passportScriptAddress);
+    const refPrefix = passportPolicyId + "000643b0"; // CIP-68 label 100
+    const byLot = new Map<string, Record<string, unknown>>();
+    for (const u of utxos) {
+      const refAsset = u.output.amount.find((a) => a.unit.startsWith(refPrefix));
+      if (!refAsset) continue;
+      const p = parsePassportDatum(u);
+      if (!p || !p.lot_id) continue;
+      byLot.set(p.lot_id, {
+        lot_id: p.lot_id,
+        farm_id: p.farm_id,
+        variety: p.variety,
+        processing: p.processing,
+        harvest_timestamp: p.harvest_timestamp,
+        sca_score: p.sca_score,
+        owner: p.owner,
+        daily_events_merkle_root: p.daily_events_merkle_root,
+        co2e_per_kg_int10: p.sustainability.co2e_per_kg_int10,
+        water_l_per_kg: p.sustainability.water_l_per_kg,
+        eudr_dds_hash: p.sustainability.eudr_dds_hash,
+        ref_tx_hash: u.input.txHash,
+      });
+    }
+    const lots = Array.from(byLot.values());
+    return { count: lots.length, lots };
+  });
+
   // GET /verify/lot/:lotId — Consumer-facing passport view.
   // NOTE: this MUST be declared before /:farmId so Fastify doesn't treat "lot"
   // as a farmId.

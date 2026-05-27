@@ -82,4 +82,32 @@ export async function iotRoutes(app: FastifyInstance) {
     }
     return { devices: Object.fromEntries(latest) };
   });
+
+  // GET /iot/telemetry/:farmId — latest soil + weather readings mapped to the
+  // operator dashboard's IoTTelemetry shape (live values, no client simulation).
+  app.get<{ Params: { farmId: string } }>("/telemetry/:farmId", async (request) => {
+    const events = await store.getEventsByFarm(request.params.farmId);
+    const latest = new Map<string, (typeof events)[0]>();
+    for (const e of events) {
+      const existing = latest.get(e.device_id);
+      if (!existing || e.recorded_at > existing.recorded_at) latest.set(e.device_id, e);
+    }
+    const soil = (latest.get("teros12-block-A")?.data ?? {}) as Record<string, unknown>;
+    const weather = (latest.get("weather-station-01")?.data ?? {}) as Record<string, unknown>;
+    const num = (v: unknown) => (typeof v === "number" ? v : Number(v) || 0);
+    return {
+      farm_id: request.params.farmId,
+      telemetry: {
+        soilMoisture: num(soil.soil_moisture_pct),
+        temperature: num(weather.air_temp_c) || num(soil.soil_temp_c),
+        humidity: num(weather.humidity_pct),
+        ecLevels: num(soil.soil_ec_ds_m),
+        parSensor: num(weather.par_umol),
+      },
+      updated_at:
+        latest.get("teros12-block-A")?.recorded_at ??
+        latest.get("weather-station-01")?.recorded_at ??
+        null,
+    };
+  });
 }

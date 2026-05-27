@@ -31,6 +31,8 @@ export interface Lot {
   timeline: TimelineStep[];
   altitudeNum: number;
   description: string;
+  /** On-chain mint/reference tx hash (only present for real on-chain lots). */
+  txHash?: string;
 }
 
 export interface EventLog {

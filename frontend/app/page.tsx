@@ -34,14 +34,77 @@ import { Lot, EventLog, IoTTelemetry } from "@/lib/types";
 import { INITIAL_LOTS, INITIAL_EVENT_LOGS, INITIAL_IOT_TELEMETRY } from "@/lib/data";
 
 const BLOCKFROST_KEY = process.env.NEXT_PUBLIC_BLOCKFROST_KEY || "";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
 const CARDANOSCAN = "https://preview.cardanoscan.io";
+
+// Shape returned by GET /verify/lots
+type OnchainLot = {
+  lot_id: string;
+  farm_id: string;
+  variety: string;
+  processing: string;
+  harvest_timestamp: number;
+  sca_score: number;
+  daily_events_merkle_root: string;
+  co2e_per_kg_int10: number;
+  water_l_per_kg: number;
+  ref_tx_hash: string;
+};
+
+// Map an on-chain passport to the UI's richer Lot shape. Fields not stored
+// on-chain (grower photo, coordinates, telemetry, full timeline) get sensible
+// placeholders so real lots render without breaking the demo-oriented UI.
+function onchainToLot(p: Partial<OnchainLot> & { lot_id: string }): Lot {
+  const harvestDate = p.harvest_timestamp
+    ? new Date(p.harvest_timestamp * 1000).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : "—";
+  return {
+    id: p.lot_id,
+    variety: p.variety || "—",
+    stage: `Processing - ${p.processing || "—"}`,
+    moisture: "—",
+    density: "—",
+    ph: "—",
+    bagCount: 0,
+    origin: p.farm_id || "On-chain Lot",
+    coordinates: "—",
+    altitude: "—",
+    grower: p.farm_id || "—",
+    growerTitle: "On-chain Operator",
+    growerAvatar: "/logo.png",
+    cuppingScore: p.sca_score || 0,
+    carbonFootprint: p.co2e_per_kg_int10 ? `${(p.co2e_per_kg_int10 / 10).toFixed(2)} kg` : "—",
+    waterIntensity: p.water_l_per_kg ? `${p.water_l_per_kg} L` : "—",
+    waterReuseEfficiency: "0%",
+    eudrStatus: "Compliant",
+    policyId: passportPolicyId,
+    assetName: `Lot_${p.lot_id.replace(/-/g, "_")}`,
+    merkleRoot: p.daily_events_merkle_root || "Not yet anchored",
+    epoch: 0,
+    timeline: [
+      {
+        date: harvestDate,
+        title: "Minted",
+        desc: "CIP-68 passport minted on Cardano.",
+        status: "completed",
+      },
+    ],
+    altitudeNum: 0,
+    description: `On-chain CIP-68 passport for lot ${p.lot_id}.`,
+    txHash: p.ref_tx_hash || undefined,
+  };
+}
 
 export default function FarmDashboard() {
   const { connected, wallet } = useWallet();
 
   // App-wide state
   const [currentView, setCurrentView] = useState<ViewKey>("dashboard");
-  const [lots] = useState<Lot[]>(INITIAL_LOTS);
+  const [lots, setLots] = useState<Lot[]>(INITIAL_LOTS);
   const [selectedLot, setSelectedLot] = useState<Lot>(INITIAL_LOTS[0]);
   const [eventLogs, setEventLogs] = useState<EventLog[]>(INITIAL_EVENT_LOGS);
   const [telemetry, setTelemetry] = useState<IoTTelemetry>(INITIAL_IOT_TELEMETRY);
@@ -64,6 +127,44 @@ export default function FarmDashboard() {
       setWalletAddress(null);
     }
   }, [connected, wallet]);
+
+  // Poll real IoT telemetry from the backend every minute (replaces the
+  // client-side simulation when live sensor data is available).
+  useEffect(() => {
+    const FARM = "binhdong";
+    let alive = true;
+    const load = () => {
+      fetch(`${BACKEND_URL}/iot/telemetry/${FARM}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then((d: { telemetry: IoTTelemetry; updated_at: string | null }) => {
+          if (alive && d?.updated_at && d.telemetry) setTelemetry(d.telemetry);
+        })
+        .catch(() => {
+          /* backend down / no data — keep current telemetry */
+        });
+    };
+    load();
+    const id = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Load real on-chain minted lots and merge them ahead of the demo lots.
+  useEffect(() => {
+    fetch(`${BACKEND_URL}/verify/lots`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(({ lots: onchain }: { lots: OnchainLot[] }) => {
+        if (!onchain?.length) return;
+        const mapped = onchain.map(onchainToLot);
+        const ids = new Set(mapped.map((l) => l.id));
+        setLots([...mapped, ...INITIAL_LOTS.filter((l) => !ids.has(l.id))]);
+      })
+      .catch(() => {
+        /* backend unavailable — keep demo lots */
+      });
+  }, []);
 
   const farmId = mintFarmId.trim();
   const lotId = mintLotId.trim().toUpperCase();
@@ -140,6 +241,32 @@ export default function FarmDashboard() {
       const refTokenName = referenceTokenName(lotId);
       const usrTokenName = userTokenName(lotId);
 
+      // CIP-25 (label 721) on-chain NFT metadata for explorers/wallets. Keep each
+      // string ≤64 bytes (tx-metadata limit). Keyed by the on-chain 222 asset name.
+      // NOTE: /logo.png is a localhost placeholder — swap to an ipfs:// URI for prod.
+      const harvestDate = new Date(harvestTimestamp * 1000)
+        .toISOString()
+        .split("T")[0];
+      const imageUrl =
+        (typeof window !== "undefined" ? window.location.origin : "") + "/logo.png";
+      const cip25Metadata = {
+        [passportPolicyId]: {
+          [usrTokenName]: {
+            name: `VVC Passport ${lotId}`,
+            image: imageUrl,
+            mediaType: "image/png",
+            description: "Traceable Vietnamese coffee passport (CIP-68).",
+            farm: farmId,
+            lot: lotId,
+            variety: mintVariety,
+            processing: mintProcessing,
+            harvest_date: harvestDate,
+            standard: "VerifiedVietCoffee v3",
+          },
+        },
+        version: 2,
+      };
+
       const txBuilder = new MeshTxBuilder({ fetcher: provider, verbose: false });
       const unsignedTx = await txBuilder
         // Reference token (CIP-68 label 100) — locked at the script with datum
@@ -156,6 +283,7 @@ export default function FarmDashboard() {
           { unit: passportPolicyId + refTokenName, quantity: "1" },
         ])
         .txOutInlineDatumValue(datum)
+        .metadataValue(721, cip25Metadata)
         .txInCollateral(
           collateralUtxo.input.txHash,
           collateralUtxo.input.outputIndex,
@@ -184,6 +312,34 @@ export default function FarmDashboard() {
         txHash = await wallet.submitTx(signedTx);
       }
       setMintResult({ hash: txHash });
+
+      // Show the new lot right away and persist it to the backend (best-effort).
+      const newLot = onchainToLot({
+        lot_id: lotId,
+        farm_id: farmId,
+        variety: mintVariety,
+        processing: mintProcessing,
+        harvest_timestamp: harvestTimestamp,
+        sca_score: 0,
+        daily_events_merkle_root: "",
+        co2e_per_kg_int10: 0,
+        water_l_per_kg: 0,
+        ref_tx_hash: txHash,
+      });
+      setLots((prev) => [newLot, ...prev.filter((l) => l.id !== lotId)]);
+      fetch(`${BACKEND_URL}/lot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          farm_id: farmId,
+          variety: mintVariety,
+          processing: mintProcessing,
+          harvest_date: new Date(harvestTimestamp * 1000).toISOString().slice(0, 10),
+          status: "minted",
+          nft_token_name: lotId,
+          nft_tx_hash: txHash,
+        }),
+      }).catch(() => {});
     } catch (err: any) {
       console.error(err);
       setMintResult({ error: err?.message || String(err) });

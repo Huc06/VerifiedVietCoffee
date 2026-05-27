@@ -134,7 +134,7 @@ export default function LotPage({
     // back to demo data here — that would misrepresent a real lot as another farm.
     const load = async () => {
       try {
-        const r = await fetch(`${BACKEND_URL}/verify/lot/${encodeURIComponent(lotId)}`);
+        const r = await fetch(`${BACKEND_URL}/verify/lot/${encodeURIComponent(lotId)}`, { headers: { "ngrok-skip-browser-warning": "true" } });
         if (r.status === 404) {
           if (attempts < 5 && alive) {
             attempts += 1;

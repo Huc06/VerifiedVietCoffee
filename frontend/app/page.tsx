@@ -134,7 +134,7 @@ export default function FarmDashboard() {
     const FARM = "binhdong";
     let alive = true;
     const load = () => {
-      fetch(`${BACKEND_URL}/iot/telemetry/${FARM}`)
+      fetch(`${BACKEND_URL}/iot/telemetry/${FARM}`, { headers: { "ngrok-skip-browser-warning": "true" } })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then((d: { telemetry: IoTTelemetry; updated_at: string | null }) => {
           if (alive && d?.updated_at && d.telemetry) setTelemetry(d.telemetry);
@@ -153,7 +153,7 @@ export default function FarmDashboard() {
 
   // Load real on-chain minted lots and merge them ahead of the demo lots.
   useEffect(() => {
-    fetch(`${BACKEND_URL}/verify/lots`)
+    fetch(`${BACKEND_URL}/verify/lots`, { headers: { "ngrok-skip-browser-warning": "true" } })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then(({ lots: onchain }: { lots: OnchainLot[] }) => {
         if (!onchain?.length) return;
@@ -329,7 +329,7 @@ export default function FarmDashboard() {
       setLots((prev) => [newLot, ...prev.filter((l) => l.id !== lotId)]);
       fetch(`${BACKEND_URL}/lot`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
         body: JSON.stringify({
           farm_id: farmId,
           variety: mintVariety,

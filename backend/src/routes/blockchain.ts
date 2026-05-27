@@ -7,6 +7,9 @@ import {
   passportScriptAddress,
   setupOracleCollateral,
   submitUpdateEvents,
+  submitUpdateLab,
+  submitUpdateSustainability,
+  type SustainabilityInput,
 } from "../lib/cardano.js";
 
 export async function blockchainRoutes(app: FastifyInstance) {
@@ -113,6 +116,93 @@ export async function blockchainRoutes(app: FastifyInstance) {
           error_message: msg,
         });
         request.log.error({ err }, "submit-anchor failed");
+        return reply.status(500).send({ error: msg });
+      }
+    },
+  );
+
+  // POST /blockchain/submit-lab — Set SCA score + lab cert hash on-chain
+  app.post<{
+    Body: { lot_id: string; sca_score: number; lab_cert_hash?: string };
+  }>("/submit-lab", async (request, reply) => {
+    const { lot_id, sca_score, lab_cert_hash } = request.body;
+    if (!lot_id || sca_score === undefined) {
+      return reply.status(400).send({ error: "lot_id and sca_score required" });
+    }
+    const oraclePkh = await getOraclePkh();
+    const oracleRow = await store.findOracleByPkhKind(oraclePkh, "lab");
+    const submission = oracleRow
+      ? await store.insertOracleSubmission({
+          oracle_id: oracleRow.id,
+          farm_id: undefined,
+          action: "UpdateLab",
+          payload_hash: lab_cert_hash || `sca:${sca_score}`,
+          status: "pending",
+        })
+      : null;
+    try {
+      const { txHash } = await submitUpdateLab(
+        lot_id,
+        sca_score,
+        lab_cert_hash || "",
+      );
+      if (submission)
+        await store.updateOracleSubmission(submission.id, {
+          tx_hash: txHash,
+          status: "submitted",
+        });
+      return { lot_id, tx_hash: txHash, status: "submitted" };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (submission)
+        await store.updateOracleSubmission(submission.id, {
+          status: "failed",
+          error_message: msg,
+        });
+      request.log.error({ err }, "submit-lab failed");
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
+  // POST /blockchain/submit-sustainability — Set sustainability metrics on-chain
+  app.post<{ Body: { lot_id: string } & SustainabilityInput }>(
+    "/submit-sustainability",
+    async (request, reply) => {
+      const { lot_id, ...metrics } = request.body;
+      if (!lot_id) {
+        return reply.status(400).send({ error: "lot_id required" });
+      }
+      const oraclePkh = await getOraclePkh();
+      const oracleRow = await store.findOracleByPkhKind(
+        oraclePkh,
+        "sustainability",
+      );
+      const submission = oracleRow
+        ? await store.insertOracleSubmission({
+            oracle_id: oracleRow.id,
+            farm_id: undefined,
+            action: "UpdateSustainability",
+            payload_hash:
+              metrics.eudr_dds_hash || `co2e:${metrics.co2e_per_kg ?? "?"}`,
+            status: "pending",
+          })
+        : null;
+      try {
+        const { txHash } = await submitUpdateSustainability(lot_id, metrics);
+        if (submission)
+          await store.updateOracleSubmission(submission.id, {
+            tx_hash: txHash,
+            status: "submitted",
+          });
+        return { lot_id, tx_hash: txHash, status: "submitted" };
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        if (submission)
+          await store.updateOracleSubmission(submission.id, {
+            status: "failed",
+            error_message: msg,
+          });
+        request.log.error({ err }, "submit-sustainability failed");
         return reply.status(500).send({ error: msg });
       }
     },

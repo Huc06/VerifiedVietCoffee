@@ -283,50 +283,122 @@ function TimelineTab({
           .map((d) => (
             <li
               key={d.date}
-              className="border border-stone-200 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 hover:bg-stone-50 transition"
+              className="border border-stone-200 rounded-lg p-3 hover:bg-stone-50 transition"
             >
-              <div>
-                <p className="font-medium text-sm">{d.date}</p>
-                <p className="text-xs text-stone-500">
-                  {d.event_count} sensor reading{d.event_count === 1 ? "" : "s"}
-                </p>
-                <p className="text-[10px] font-mono text-stone-400 mt-1">
-                  root {shortHash(d.merkle_root_offchain)}
-                </p>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <p className="font-medium text-sm">{d.date}</p>
+                  <p className="text-xs text-stone-500">
+                    {d.event_count} sensor reading
+                    {d.event_count === 1 ? "" : "s"}
+                  </p>
+                  <p className="text-[10px] font-mono text-stone-400 mt-1">
+                    root {shortHash(d.merkle_root_offchain)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  {d.current_root_match ? (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
+                      ✓ current
+                    </span>
+                  ) : d.verified ? (
+                    <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                      anchored
+                    </span>
+                  ) : d.tx_hash ? (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                      ⚠ tampered?
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-stone-100 text-stone-500">
+                      pending
+                    </span>
+                  )}
+                  {d.tx_hash && (
+                    <a
+                      className="text-blue-600 hover:underline"
+                      href={`${CARDANOSCAN}/transaction/${d.tx_hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      tx ↗
+                    </a>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 text-xs">
-                {d.current_root_match ? (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
-                    ✓ current
-                  </span>
-                ) : d.verified ? (
-                  <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-                    anchored
-                  </span>
-                ) : d.tx_hash ? (
-                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
-                    ⚠ tampered?
-                  </span>
-                ) : (
-                  <span className="px-2 py-0.5 rounded-full bg-stone-100 text-stone-500">
-                    pending
-                  </span>
-                )}
-                {d.tx_hash && (
-                  <a
-                    className="text-blue-600 hover:underline"
-                    href={`${CARDANOSCAN}/transaction/${d.tx_hash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    tx ↗
-                  </a>
-                )}
-              </div>
+
+              <DayMetrics events={d.events} />
+              <DayPhotos events={d.events} />
             </li>
           ))}
       </ol>
     </>
+  );
+}
+
+type Ev = Record<string, any>;
+
+function avg(events: Ev[], type: string, key: string): number | null {
+  const vals = events
+    .filter((e) => (e.data?.event_type ?? e.event_type) === type)
+    .map((e) => Number((e.data ?? e)[key]))
+    .filter((n) => !Number.isNaN(n));
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function DayMetrics({ events }: { events: Ev[] }) {
+  const chips: { label: string; value: string }[] = [];
+  const soilMoist = avg(events, "soil", "soil_moisture_pct");
+  const soilTemp = avg(events, "soil", "soil_temp_c");
+  const airTemp = avg(events, "weather", "air_temp_c");
+  const humidity = avg(events, "weather", "humidity_pct");
+  const rain = avg(events, "weather", "rain_mm");
+  if (soilMoist !== null)
+    chips.push({ label: "soil moisture", value: `${soilMoist.toFixed(0)}%` });
+  if (soilTemp !== null)
+    chips.push({ label: "soil temp", value: `${soilTemp.toFixed(1)}°C` });
+  if (airTemp !== null)
+    chips.push({ label: "air temp", value: `${airTemp.toFixed(1)}°C` });
+  if (humidity !== null)
+    chips.push({ label: "humidity", value: `${humidity.toFixed(0)}%` });
+  if (rain !== null)
+    chips.push({ label: "rain", value: `${rain.toFixed(1)}mm` });
+  if (!chips.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-2.5">
+      {chips.map((c) => (
+        <span
+          key={c.label}
+          className="text-[10px] px-2 py-0.5 rounded bg-stone-100 text-stone-600"
+        >
+          <span className="text-stone-400">{c.label}</span>{" "}
+          <span className="font-semibold">{c.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function DayPhotos({ events }: { events: Ev[] }) {
+  const photos = events
+    .map((e) => (e.data ?? e) as Ev)
+    .filter((d) => d.event_type === "photo" && d.photo_url)
+    .slice(0, 6);
+  if (!photos.length) return null;
+  return (
+    <div className="flex gap-1.5 mt-2.5 overflow-x-auto">
+      {photos.map((p, i) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={i}
+          src={p.photo_url as string}
+          alt={`canopy ${i}`}
+          className="h-14 w-14 rounded object-cover border border-stone-200 flex-shrink-0"
+          loading="lazy"
+        />
+      ))}
+    </div>
   );
 }
 

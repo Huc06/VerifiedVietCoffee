@@ -180,6 +180,16 @@ function pdFields(node: JsonPD | undefined): JsonPD[] {
   if (!node) return [];
   return (node as { fields?: JsonPD[] }).fields ?? [];
 }
+// Bool = Constr 0 [] (False) / Constr 1 [] (True). Tolerate legacy Int encoding.
+function pdBool(node: JsonPD | undefined): number {
+  if (!node) return 0;
+  if (Object.prototype.hasOwnProperty.call(node, "constructor")) {
+    return Number((node as { constructor: number | string }).constructor) === 1
+      ? 1
+      : 0;
+  }
+  return pdInt(node) === 0 ? 0 : 1;
+}
 
 export function parsePassportDatum(refUtxo: UTxO): CoffeePassport | null {
   const rawDatum = refUtxo.output.plutusData;
@@ -208,8 +218,8 @@ export function parsePassportDatum(refUtxo: UTxO): CoffeePassport | null {
     sca_score: pdInt(fields[8]),
     lab_cert_hash: pdString(fields[9]),
     sustainability: {
-      forest_baseline_hash: pdBytes(sFields[0]),
-      eudr_dds_hash: pdBytes(sFields[1]),
+      forest_baseline_hash: pdString(sFields[0]),
+      eudr_dds_hash: pdString(sFields[1]),
       deforestation_risk_score: pdInt(sFields[2]),
       fertilizer_log_hash: pdBytes(sFields[3]),
       organic_input_ratio_pct: pdInt(sFields[4]),
@@ -217,12 +227,12 @@ export function parsePassportDatum(refUtxo: UTxO): CoffeePassport | null {
       co2e_per_kg_int10: pdInt(sFields[6]),
       co2_calc_method: pdString(sFields[7]),
       water_l_per_kg: pdInt(sFields[8]),
-      wastewater_treated: pdInt(sFields[9]),
+      wastewater_treated: pdBool(sFields[9]),
       som_pct_int10: pdInt(sFields[10]),
-      soil_test_lab_hash: pdBytes(sFields[11]),
+      soil_test_lab_hash: pdString(sFields[11]),
       shade_canopy_pct: pdInt(sFields[12]),
       bird_species_count: pdInt(sFields[13]),
-      biodiversity_audit_hash: pdBytes(sFields[14]),
+      biodiversity_audit_hash: pdString(sFields[14]),
       certifications: pdList(sFields[15]).map(pdString),
     },
     metadata_version: pdInt(fields[11]),
@@ -303,17 +313,16 @@ function coerceBool(v: Data): Data {
   return v;
 }
 
-// Replace field 5 (daily_events_merkle_root) with the given hex root.
-function rebuildDatumWithMerkleRoot(datumCbor: string, merkleRoot: string): Data {
+// Parse the reference UTxO datum into mutable Mesh `Data` fields, with the
+// Bool field (wastewater_treated) coerced to a proper Constr.
+function parseDatumToMeshFields(datumCbor: string): Data[] {
   const parsed = parseDatumCbor<JsonPD>(datumCbor);
   const fields = pdFields(parsed);
   if (fields.length < 13) {
     throw new Error("Reference datum does not have expected 13 fields");
   }
-  const newFields = fields.map(jsonPdToMeshData) as Data[];
-  newFields[5] = merkleRoot;
-  // Fix wastewater_treated (field 9 of nested sustainability struct at idx 10).
-  const sustainability = newFields[10] as {
+  const meshFields = fields.map(jsonPdToMeshData) as Data[];
+  const sustainability = meshFields[10] as {
     alternative: number;
     fields: Data[];
   };
@@ -325,12 +334,188 @@ function rebuildDatumWithMerkleRoot(datumCbor: string, merkleRoot: string): Data
   ) {
     sustainability.fields[9] = coerceBool(sustainability.fields[9]);
   }
-  return { alternative: 0, fields: newFields };
+  return meshFields;
 }
 
 export interface SubmitResult {
   txHash: string;
   oraclePkh: string;
+}
+
+// ---- Generic spend: mutate the datum + submit with the given redeemer ----
+async function submitDatumUpdate(
+  lotId: string,
+  redeemer: Data,
+  mutate: (fields: Data[]) => void,
+): Promise<SubmitResult> {
+  const wallet = await getOracleWallet();
+  const provider = getProvider();
+  const oraclePkh = await getOraclePkh();
+
+  const refUtxo = await findReferenceUtxo(lotId);
+  if (!refUtxo) {
+    throw new Error(
+      `Reference UTxO not found at ${passportScriptAddress} for lot ${lotId}. Mint passport first.`,
+    );
+  }
+  const datumCbor = refUtxo.output.plutusData;
+  if (!datumCbor || typeof datumCbor !== "string") {
+    throw new Error("Reference UTxO has no inline datum");
+  }
+
+  const passport = parsePassportDatum(refUtxo);
+  if (passport && passport.owner && passport.owner !== oraclePkh) {
+    throw new Error(
+      `Oracle pkh (${oraclePkh}) does not match passport datum owner (${passport.owner}). ` +
+        `Mint passport with the oracle's key, or rotate ORACLE_MNEMONIC.`,
+    );
+  }
+
+  const fields = parseDatumToMeshFields(datumCbor);
+  mutate(fields);
+  const newDatum: Data = { alternative: 0, fields };
+
+  const utxos = await wallet.getUtxos();
+  const changeAddress = await wallet.getChangeAddress();
+  let collateral = await wallet.getCollateral();
+  if (!collateral.length) {
+    const minLovelace = BigInt(3_000_000);
+    const isLovelace = (unit: string) => unit === "lovelace" || unit === "";
+    const pureAda = utxos
+      .filter((u) => {
+        const onlyAda =
+          u.output.amount.length === 1 && isLovelace(u.output.amount[0].unit);
+        if (!onlyAda) return false;
+        try {
+          return BigInt(u.output.amount[0].quantity) >= minLovelace;
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) =>
+        BigInt(b.output.amount[0].quantity) >
+        BigInt(a.output.amount[0].quantity)
+          ? 1
+          : -1,
+      );
+    if (pureAda.length === 0) {
+      throw new Error(
+        `Oracle wallet has no pure-ADA UTxO (>= 3 ADA) to use as collateral ` +
+          `(${utxos.length} UTxOs total). Send the oracle address ` +
+          `at least 5 ADA in a fresh pure-ADA UTxO: ${changeAddress}`,
+      );
+    }
+    collateral = [pureAda[0]];
+  }
+
+  const refTokenAssets = refUtxo.output.amount
+    .filter((a) => a.unit !== "lovelace" && a.unit !== "")
+    .map((a) => ({ unit: a.unit, quantity: a.quantity }));
+  // 3 ADA comfortably covers min-UTxO even for the largest datum (lab cert +
+  // sustainability hashes). Excess returns to the oracle as change.
+  const outputAssets = [
+    { unit: "lovelace", quantity: "3000000" },
+    ...refTokenAssets,
+  ];
+
+  const txBuilder = new MeshTxBuilder({
+    fetcher: provider,
+    submitter: provider,
+    verbose: false,
+  });
+
+  const unsignedTx = await txBuilder
+    .spendingPlutusScriptV3()
+    .txIn(refUtxo.input.txHash, refUtxo.input.outputIndex)
+    .txInInlineDatumPresent()
+    .txInRedeemerValue(redeemer)
+    .txInScript(scriptCbor)
+    .txOut(passportScriptAddress, outputAssets)
+    .txOutInlineDatumValue(newDatum)
+    .requiredSignerHash(oraclePkh)
+    .txInCollateral(
+      collateral[0].input.txHash,
+      collateral[0].input.outputIndex,
+      collateral[0].output.amount,
+      collateral[0].output.address,
+    )
+    .changeAddress(changeAddress)
+    .selectUtxosFrom(utxos)
+    .complete();
+
+  const signedTx = await wallet.signTx(unsignedTx, true);
+  const txHash = await wallet.submitTx(signedTx);
+  return { txHash, oraclePkh };
+}
+
+// ---- UpdateEvents: set daily_events_merkle_root (field 5) ----
+export async function submitUpdateEvents(
+  lotId: string,
+  merkleRoot: string,
+): Promise<SubmitResult> {
+  return submitDatumUpdate(lotId, updateEventsRedeemer, (fields) => {
+    fields[5] = merkleRoot;
+  });
+}
+
+// ---- UpdateLab: set sca_score (field 8) + lab_cert_hash (field 9) ----
+export async function submitUpdateLab(
+  lotId: string,
+  scaScore: number,
+  labCertHash: string,
+): Promise<SubmitResult> {
+  return submitDatumUpdate(lotId, updateLabRedeemer, (fields) => {
+    fields[8] = scaScore;
+    fields[9] = labCertHash;
+  });
+}
+
+export interface SustainabilityInput {
+  co2e_per_kg?: number; // e.g. 2.45 → stored ×10 = 25 (int10)
+  water_l_per_kg?: number;
+  organic_input_ratio_pct?: number;
+  som_pct?: number; // e.g. 3.5 → stored ×10 = 35
+  shade_canopy_pct?: number;
+  deforestation_risk_score?: number;
+  eudr_dds_hash?: string;
+  wastewater_treated?: boolean;
+}
+
+// ---- UpdateSustainability: replace fields of nested struct (idx 10) ----
+// Sustainability struct field order (see veriviet/types.ak):
+//  0 forest_baseline_hash       8 water_l_per_kg
+//  1 eudr_dds_hash              9 wastewater_treated (Bool)
+//  2 deforestation_risk_score  10 som_pct_int10
+//  3 fertilizer_log_hash       11 soil_test_lab_hash
+//  4 organic_input_ratio_pct   12 shade_canopy_pct
+//  5 synthetic_n_kg_per_ha     13 bird_species_count
+//  6 co2e_per_kg_int10         14 biodiversity_audit_hash
+//  7 co2_calc_method           15 certifications (List)
+export async function submitUpdateSustainability(
+  lotId: string,
+  input: SustainabilityInput,
+): Promise<SubmitResult> {
+  return submitDatumUpdate(lotId, updateSustainabilityRedeemer, (fields) => {
+    const s = fields[10] as { alternative: number; fields: Data[] };
+    if (!s || !Array.isArray(s.fields)) {
+      throw new Error("Datum has no sustainability struct to update");
+    }
+    if (input.eudr_dds_hash !== undefined) s.fields[1] = input.eudr_dds_hash;
+    if (input.deforestation_risk_score !== undefined)
+      s.fields[2] = input.deforestation_risk_score;
+    if (input.organic_input_ratio_pct !== undefined)
+      s.fields[4] = input.organic_input_ratio_pct;
+    if (input.co2e_per_kg !== undefined)
+      s.fields[6] = Math.round(input.co2e_per_kg * 10);
+    if (input.water_l_per_kg !== undefined)
+      s.fields[8] = Math.round(input.water_l_per_kg);
+    if (input.wastewater_treated !== undefined)
+      s.fields[9] = input.wastewater_treated ? TRUE_DATA : FALSE_DATA;
+    if (input.som_pct !== undefined)
+      s.fields[10] = Math.round(input.som_pct * 10);
+    if (input.shade_canopy_pct !== undefined)
+      s.fields[12] = input.shade_canopy_pct;
+  });
 }
 
 // One-shot helper: send 5 ADA from the oracle wallet back to itself in a
@@ -362,110 +547,3 @@ export async function setupOracleCollateral(): Promise<SubmitResult> {
   return { txHash, oraclePkh };
 }
 
-// ---- Submit UpdateEvents on-chain ----
-export async function submitUpdateEvents(
-  lotId: string,
-  merkleRoot: string,
-): Promise<SubmitResult> {
-  const wallet = await getOracleWallet();
-  const provider = getProvider();
-  const oraclePkh = await getOraclePkh();
-
-  const refUtxo = await findReferenceUtxo(lotId);
-  if (!refUtxo) {
-    throw new Error(
-      `Reference UTxO not found at ${passportScriptAddress} for lot ${lotId}. Mint passport first.`,
-    );
-  }
-
-  const datumCbor = refUtxo.output.plutusData;
-  if (!datumCbor || typeof datumCbor !== "string") {
-    throw new Error("Reference UTxO has no inline datum");
-  }
-  // Owner check
-  const passport = parsePassportDatum(refUtxo);
-  if (passport && passport.owner && passport.owner !== oraclePkh) {
-    throw new Error(
-      `Oracle pkh (${oraclePkh}) does not match passport datum owner (${passport.owner}). ` +
-        `Mint passport with the oracle's key, or rotate ORACLE_MNEMONIC.`,
-    );
-  }
-
-  const newDatum = rebuildDatumWithMerkleRoot(datumCbor, merkleRoot);
-
-  const utxos = await wallet.getUtxos();
-  const changeAddress = await wallet.getChangeAddress();
-  let collateral = await wallet.getCollateral();
-
-  // Fallback: if the wallet has no dedicated collateral UTxO, pick the
-  // largest pure-ADA (>= 3 ADA) UTxO from the wallet — Mesh's headless wallet
-  // doesn't auto-create collateral the way Lace does.
-  if (!collateral.length) {
-    const minLovelace = BigInt(3_000_000);
-    const isLovelace = (unit: string) => unit === "lovelace" || unit === "";
-    const pureAda = utxos
-      .filter((u) => {
-        const onlyAda =
-          u.output.amount.length === 1 && isLovelace(u.output.amount[0].unit);
-        if (!onlyAda) return false;
-        try {
-          return BigInt(u.output.amount[0].quantity) >= minLovelace;
-        } catch {
-          return false;
-        }
-      })
-      .sort((a, b) =>
-        BigInt(b.output.amount[0].quantity) >
-        BigInt(a.output.amount[0].quantity)
-          ? 1
-          : -1,
-      );
-    if (pureAda.length === 0) {
-      throw new Error(
-        `Oracle wallet has no pure-ADA UTxO (>= 3 ADA) to use as collateral ` +
-          `(${utxos.length} UTxOs total, all carry tokens). Send the oracle ` +
-          `address at least 5 ADA in a fresh pure-ADA UTxO: ${changeAddress}`,
-      );
-    }
-    collateral = [pureAda[0]];
-  }
-
-  const txBuilder = new MeshTxBuilder({
-    fetcher: provider,
-    submitter: provider,
-    verbose: false,
-  });
-
-  // Reconstruct the continuing output: keep the ref token, bump lovelace to a
-  // safe min (2 ADA covers larger datum sizes after we add merkle root etc).
-  const refTokenAssets = refUtxo.output.amount
-    .filter((a) => a.unit !== "lovelace" && a.unit !== "")
-    .map((a) => ({ unit: a.unit, quantity: a.quantity }));
-  const outputAssets = [
-    { unit: "lovelace", quantity: "2000000" },
-    ...refTokenAssets,
-  ];
-
-  const unsignedTx = await txBuilder
-    .spendingPlutusScriptV3()
-    .txIn(refUtxo.input.txHash, refUtxo.input.outputIndex)
-    .txInInlineDatumPresent()
-    .txInRedeemerValue(updateEventsRedeemer)
-    .txInScript(scriptCbor)
-    .txOut(passportScriptAddress, outputAssets)
-    .txOutInlineDatumValue(newDatum)
-    .requiredSignerHash(oraclePkh)
-    .txInCollateral(
-      collateral[0].input.txHash,
-      collateral[0].input.outputIndex,
-      collateral[0].output.amount,
-      collateral[0].output.address,
-    )
-    .changeAddress(changeAddress)
-    .selectUtxosFrom(utxos)
-    .complete();
-
-  const signedTx = await wallet.signTx(unsignedTx, true);
-  const txHash = await wallet.submitTx(signedTx);
-  return { txHash, oraclePkh };
-}

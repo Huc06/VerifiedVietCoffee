@@ -22,6 +22,8 @@ import {
 } from "@/app/lib/coffee-passport";
 
 const BLOCKFROST_KEY = process.env.NEXT_PUBLIC_BLOCKFROST_KEY || "";
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
 
 // Lace's CIP-30 getCollateral returns null when no dedicated collateral UTxO
 // is configured (Mesh's getCollateralMesh() then crashes on .map()). Fall
@@ -258,56 +260,25 @@ export default function Home() {
     }
   }
 
+  // Update Lab now goes through the backend oracle (server-signed), which
+  // correctly decodes the CIP-68 datum CBOR. The browser wallet path can't
+  // reconstruct the datum because Mesh returns plutusData as a CBOR hex string.
   async function handleUpdateLab() {
     setLoading(true);
     setResult(null);
     try {
-      const provider = getProvider();
-      const utxos = await wallet.getUtxosMesh();
-      const changeAddress = await wallet.getChangeAddressBech32();
-      const collateral: UTxO[] = await getCollateralUtxo(wallet, utxos);
-      const ownerPkh = resolvePaymentKeyHash(changeAddress);
-
-      const refTokenName = referenceTokenName(lotId);
-      const refAssetUnit = passportPolicyId + refTokenName;
-      const scriptUtxos = await provider.fetchAddressUTxOs(passportScriptAddress);
-      const refUtxo = scriptUtxos.find((u: UTxO) =>
-        u.output.amount.some((a: any) => a.unit === refAssetUnit),
-      );
-      if (!refUtxo) throw new Error("Reference token UTxO not found at script address");
-
-      const oldDatumFields = (refUtxo.output.plutusData as any)?.fields;
-      if (!oldDatumFields) throw new Error("No inline datum found on reference UTxO");
-
-      const newFields = [...oldDatumFields];
-      newFields[8] = parseInt(scaScore) || 0;
-      if (labCertHash) newFields[9] = labCertHash;
-      const newDatum = { alternative: 0, fields: newFields };
-
-      const txBuilder = new MeshTxBuilder({ fetcher: provider, verbose: true });
-
-      const unsignedTx = await txBuilder
-        .spendingPlutusScriptV3()
-        .txIn(refUtxo.input.txHash, refUtxo.input.outputIndex)
-        .txInInlineDatumPresent()
-        .txInRedeemerValue(updateLabRedeemer)
-        .txInScript(scriptCbor)
-        .txOut(passportScriptAddress, refUtxo.output.amount)
-        .txOutInlineDatumValue(newDatum)
-        .requiredSignerHash(ownerPkh)
-        .txInCollateral(
-          collateral[0].input.txHash,
-          collateral[0].input.outputIndex,
-          collateral[0].output.amount,
-          collateral[0].output.address,
-        )
-        .changeAddress(changeAddress)
-        .selectUtxosFrom(utxos)
-        .complete();
-
-      const signedTx = await wallet.signTxReturnFullTx(unsignedTx, true);
-      const txHash = await wallet.submitTx(signedTx);
-      setResult({ hash: txHash });
+      const res = await fetch(`${BACKEND_URL}/blockchain/submit-lab`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lot_id: lotId,
+          sca_score: parseInt(scaScore) || 0,
+          lab_cert_hash: labCertHash || undefined,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      setResult({ hash: json.tx_hash });
     } catch (e: any) {
       setResult({ error: e.message || String(e) });
     } finally {
